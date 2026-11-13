@@ -1,0 +1,18 @@
+# Signals as Vectors {#sec-signals-as-vectors}
+
+A finite signal is a vector, so ideas from geometry (length, angle, projection) apply directly to signals.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Vectors in 2D and 3D as a warm-up
+- Inner product as a measure of similarity; norm as energy
+- Orthogonal signals and bases
+- Projection and the best approximation of a signal
+- Change of basis as a matrix product, preparing the ground for the DFT
+- Cross-correlation and autocorrelation as sliding inner products: finding a known pattern and measuring a delay

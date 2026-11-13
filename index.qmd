@@ -1,0 +1,49 @@
+# Preface {.unnumbered}
+
+Your phone records your voice, compresses it, sends it as radio waves and
+rebuilds it on the other side. Your music player turns lists of numbers into
+sound. A Wi-Fi card squeezes hundreds of megabits per second through a noisy
+channel. All of this is **digital signal processing** (DSP): the art of
+manipulating signals that have been turned into numbers.
+
+## Who this book is for
+
+This book is written for computer science and engineering students in the last
+years of their degree. You are expected to program comfortably and to remember
+basic algebra and a little calculus. You are **not** expected to know complex
+analysis, Fourier series or transforms: every mathematical tool is introduced
+from scratch, when it is needed and only as far as it is needed.
+
+## How this book works
+
+Every idea comes with code you can run. Figures are not drawn by hand: they are
+produced by the Python code next to them every time the book is built, so what
+you read is what the code really does.
+
+You can work with the code in three ways, from least to most effort:
+
+1. **Read it.** Code and results appear together in the HTML and PDF editions.
+2. **Try it in the browser.** Boxes marked *Try it* in the HTML edition contain
+   editable code that runs in your browser. Change a parameter, press *Run*,
+   and see what happens. Nothing to install.
+3. **Run everything locally.** One container image holds Python, the libraries
+   and the tools that build this book. @sec-running-the-code shows how to open
+   it as a JupyterLab session or a VS Code dev container. You only need Docker.
+
+## How to read it
+
+Part I treats signals as lists of numbers and as vectors. Part II introduces
+frequency, the central idea of the book. Part III shows how to change signals
+with filters. Part IV connects the digital world with the analog one. Part V
+puts everything together in a software modem that sends bits through a
+simulated telephone line.
+
+The chapters are meant to be read in order. Mathematical refreshers live in
+@sec-math-toolbox, so you can look things up without breaking the flow.
+
+## Acknowledgements
+
+The overall approach, signals first, frequency as a change of basis and a
+communication system as the final project, is inspired by
+*Signal Processing for Communications* [@prandoni2008]. This book is an
+independent text with its own explanations, examples and code.

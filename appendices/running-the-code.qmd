@@ -1,0 +1,67 @@
+# Running the Code {#sec-running-the-code}
+
+All the code in this book runs inside one container image. It contains Python,
+NumPy, SciPy, Matplotlib, JupyterLab, Quarto and LaTeX. The only thing you need
+on your computer is [Docker](https://docs.docker.com/get-started/get-docker/)
+(on Windows, Docker Desktop with Linux containers).
+
+If you just want to experiment with a single example, the *Try it* boxes in the
+HTML edition run in your browser and need nothing at all.
+
+## Get the source
+
+```sh
+git clone https://github.com/antoniofloresgil/digitalsignalprocessing.git
+cd digitalsignalprocessing
+```
+
+## Option 1: JupyterLab
+
+```sh
+make lab
+```
+
+Then open <http://localhost:8888>. The repository is mounted at `/work`, so
+anything you save there is kept on your computer. Each chapter is a `.qmd`
+file: you can copy its code cells into a notebook, or open the chapter with the
+Quarto extension and run cells one by one.
+
+Without `make` (for example in Windows PowerShell), build and run the image
+directly:
+
+```sh
+docker build --platform linux/amd64 -f docker/Dockerfile -t dsp-book:dev .
+docker run --rm -it --platform linux/amd64 --env HOME=/tmp --publish 127.0.0.1:8888:8888 --mount "type=bind,source=${PWD},target=/work" dsp-book:dev jupyter lab --ip 0.0.0.0 --port 8888 --no-browser --ServerApp.token=''
+```
+
+## Option 2: VS Code dev container
+
+Install the *Dev Containers* extension, open the repository folder and choose
+**Reopen in Container**. VS Code builds the same image and runs inside it, with
+Python, Jupyter and Quarto ready to use. Open any chapter and use
+*Run Cell* on its code blocks.
+
+## Option 3: build the whole book
+
+```sh
+make render      # HTML and PDF in _book/
+make preview     # live preview at http://localhost:4200
+```
+
+Building the book runs every code cell, so a successful build is also a test
+that all the examples work.
+
+## What is in the image
+
+| Component | Version | Used for |
+|-----------|---------|----------|
+| Ubuntu | 24.04 (pinned by digest) | Base system |
+| Quarto | 1.10.19 (pinned by hash) | Building the book |
+| Python | 3.12 | Running the examples |
+| NumPy, SciPy, Matplotlib | see `docker/requirements.txt` | Computation and plots |
+| JupyterLab | see `docker/requirements.txt` | Interactive work |
+| TeX Live (XeLaTeX) | Ubuntu 24.04 packages | PDF edition |
+
+The in-browser examples use [Pyodide](https://pyodide.org), a build of Python
+for WebAssembly. It provides NumPy, SciPy and Matplotlib too, but its versions
+may differ slightly from the container's.

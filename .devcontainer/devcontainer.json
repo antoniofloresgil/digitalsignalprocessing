@@ -1,0 +1,23 @@
+{
+  "name": "DSP book",
+  "build": {
+    "dockerfile": "../docker/Dockerfile",
+    "context": ".."
+  },
+  "runArgs": ["--platform=linux/amd64"],
+  "workspaceFolder": "/work",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+  "remoteUser": "ubuntu",
+  "updateRemoteUserUID": true,
+  "containerEnv": { "HOME": "/home/ubuntu" },
+  "customizations": {
+    "vscode": {
+      "extensions": ["quarto.quarto", "ms-python.python", "ms-toolsai.jupyter"],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "jupyter.notebookFileRoot": "${workspaceFolder}"
+      }
+    }
+  },
+  "forwardPorts": [4200, 8888]
+}

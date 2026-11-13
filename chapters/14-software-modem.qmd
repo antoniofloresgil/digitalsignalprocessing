@@ -1,0 +1,18 @@
+# Project: A Software Modem {#sec-modem}
+
+The whole book in one project: send bits over a simulated telephone line and get them back.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- The channel: bandwidth and power constraints
+- Transmitter: symbols, QAM constellations, pulse shaping, modulation
+- Receiver: demodulation and decision
+- Noise and error probability
+- Synchronisation: carrier and timing recovery
+- Measuring bit error rate end to end

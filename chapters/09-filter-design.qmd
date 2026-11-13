@@ -1,0 +1,18 @@
+# Filter Design {#sec-filter-design}
+
+Turning a specification (pass these frequencies, block those) into filter coefficients.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Specifications: passband, stopband, transition band and tolerances
+- Ideal filters and why they cannot be built
+- FIR design by windowing
+- Optimal (minimax) FIR design with Parks–McClellan
+- Simple IIR filters: DC removal and resonators
+- Filter structures and numerical precision

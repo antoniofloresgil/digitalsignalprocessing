@@ -1,0 +1,19 @@
+# Spectral Analysis in Practice {#sec-spectral-analysis}
+
+Real signals are long, and their spectra are continuous. This chapter turns the DFT into a practical tool.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- From the DFT to the DTFT, intuitively
+- Zero padding: prettier plots, no new information
+- Windows and spectral leakage
+- Time-frequency analysis: the spectrogram and the uncertainty trade-off
+- Digital frequency vs. frequency in hertz
+- Fourier series of a periodic continuous signal, built up numerically (square wave, Gibbs phenomenon)
+- A bridge to the continuous-time Fourier transform, only at the level needed for sampling

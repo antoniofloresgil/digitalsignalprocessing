@@ -1,0 +1,17 @@
+# Sampling and Interpolation {#sec-sampling}
+
+The bridge between the continuous world and lists of numbers: when sampling loses nothing, and what happens when it does.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Continuous-time signals and bandwidth
+- Interpolation: zero-order hold, linear, sinc
+- The sampling theorem
+- Aliasing, seen in time and in frequency
+- Processing analog signals digitally: differentiators and fractional delays

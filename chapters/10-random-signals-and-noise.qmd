@@ -1,0 +1,17 @@
+# Random Signals and Noise {#sec-noise}
+
+Noise is everywhere. This chapter gives just enough probability to describe it and to measure its effect.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Random variables, mean and variance, by simulation
+- Random processes and white noise
+- Power spectral density
+- Filtering noise; signal-to-noise ratio
+- A first denoising example

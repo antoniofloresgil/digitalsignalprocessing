@@ -1,0 +1,19 @@
+# The DFT and the FFT {#sec-dft}
+
+The Discrete Fourier Transform rewrites a finite signal as a sum of sinusoids. It is a change of basis, and the FFT is a fast way to compute it.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- The Fourier basis and its orthogonality, checked numerically
+- The DFT as a matrix; the inverse DFT
+- Reading a spectrum: magnitude, phase and frequency bins
+- Properties that matter in practice: linearity, shifts, symmetry of real signals, Parseval
+- Why the FFT is fast; `numpy.fft` in practice
+- Cost of the DFT vs. the FFT, measured: O(N²) against O(N log N)
+- Circular vs. linear convolution, and fast convolution with the FFT

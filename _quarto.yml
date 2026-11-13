@@ -1,0 +1,76 @@
+project:
+  type: book
+  output-dir: _book
+
+book:
+  title: "Digital Signal Processing"
+  subtitle: "A Hands-On Introduction with Python"
+  author: "Antonio Flores Gil"
+  date: today
+  output-file: Digital-Signal-Processing
+  downloads: [pdf]
+  repo-url: https://github.com/antoniofloresgil/digitalsignalprocessing
+  repo-actions: [edit, issue]
+  chapters:
+    - index.qmd
+    - part: "I. Signals"
+      chapters:
+        - chapters/01-what-is-dsp.qmd
+        - chapters/02-discrete-time-signals.qmd
+        - chapters/03-signals-as-vectors.qmd
+    - part: "II. Frequency"
+      chapters:
+        - chapters/04-complex-numbers-and-sinusoids.qmd
+        - chapters/05-dft-and-fft.qmd
+        - chapters/06-dtft-and-spectral-analysis.qmd
+    - part: "III. Filters"
+      chapters:
+        - chapters/07-lti-systems-and-convolution.qmd
+        - chapters/08-z-transform.qmd
+        - chapters/09-filter-design.qmd
+    - part: "IV. From Analog to Digital and Back"
+      chapters:
+        - chapters/10-random-signals-and-noise.qmd
+        - chapters/11-sampling-and-interpolation.qmd
+        - chapters/12-quantization-and-conversion.qmd
+        - chapters/13-multirate-processing.qmd
+    - part: "V. Putting It All Together"
+      chapters:
+        - chapters/14-software-modem.qmd
+    - references.qmd
+  appendices:
+    - appendices/running-the-code.qmd
+    - appendices/math-toolbox.qmd
+
+bibliography: references.bib
+date-format: iso
+
+execute:
+  freeze: auto
+  echo: true
+  warning: false
+
+jupyter: python3
+
+fig-cap-location: bottom
+number-depth: 2
+
+format:
+  live-html:
+    theme:
+      light: [cosmo, styles/book.scss]
+      dark: [darkly, styles/book.scss]
+    code-copy: true
+    code-tools: false
+    fig-format: svg
+    pyodide:
+      packages: [numpy, scipy, matplotlib]
+  pdf:
+    documentclass: scrreprt
+    papersize: a4
+    pdf-engine: xelatex
+    latex-auto-install: false
+    toc-depth: 2
+    fig-format: pdf
+    code-block-bg: true
+    include-in-header: styles/book.tex

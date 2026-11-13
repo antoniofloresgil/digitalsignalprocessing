@@ -1,0 +1,16 @@
+# Quantization and A/D–D/A Conversion {#sec-quantization}
+
+Sampling discretises time; quantization discretises amplitude. Together they make a signal digital.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Uniform quantization and quantization error
+- The 6 dB-per-bit rule, measured
+- Non-uniform quantization and μ-law companding
+- How A/D and D/A converters work

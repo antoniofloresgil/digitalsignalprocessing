@@ -1,0 +1,17 @@
+# The z-Transform as a Tool {#sec-z-transform}
+
+The z-transform is presented only as a bookkeeping device that turns difference equations into polynomials. No contour integrals.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Difference equations as algorithms
+- Delays become powers of z; the transfer function
+- Poles and zeros, and reading a frequency response from a pole-zero plot
+- Stability at a glance
+- `scipy.signal` for analysis

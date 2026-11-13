@@ -1,0 +1,12 @@
+# Math Toolbox {#sec-math-toolbox}
+
+Short refreshers on the mathematics used in the book, written to be looked up
+rather than read in one go.
+
+::: {.callout-note}
+## Draft appendix
+Planned entries: sums and the geometric series; radians, sine and cosine;
+trigonometric identities used in the book; complex numbers summary;
+vectors, matrices and matrix–vector products; mean, variance and the
+Gaussian distribution; decibels.
+:::

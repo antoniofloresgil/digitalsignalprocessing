@@ -1,0 +1,383 @@
+# What Is Digital Signal Processing? {#sec-what-is-dsp}
+
+A **signal** is a description of how something changes: the temperature outside
+during a month, the air pressure in front of a microphone, the voltage on a
+wire, the brightness of each pixel along a line of an image. **Signal
+processing** is anything we do to a signal to extract information from it or
+to change it: averaging, removing noise, compressing, detecting a pattern,
+sending it somewhere else.
+
+**Digital** signal processing does all of this with numbers in a computer.
+That simple decision, *everything becomes a list of numbers*, is what makes DSP
+so powerful: the same processor, running different programs, can be a radio,
+a hearing aid, a music synthesiser or a modem.
+
+This chapter explains, with small experiments, the two steps that turn a
+physical phenomenon into a list of numbers, and why it is worth doing.
+
+By the end of it you should be able to:
+
+- explain what *sampling* and *quantization* are and what each one loses;
+- see why taking samples "fast enough" matters;
+- estimate how many bits a measurement needs;
+- explain why digital transmission beats analog transmission over long
+  distances.
+
+We will use three libraries throughout the book: NumPy for arrays and maths,
+Matplotlib for plots and, later, SciPy for signal processing routines.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+
+rng = np.random.default_rng(2026)   # fixed seed: the same "random" numbers every build
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## A signal is a list of numbers
+
+Suppose we read a thermometer at noon every day for a month. The result is a
+list of 30 numbers. To build a realistic example, we pretend that the "true"
+temperature is a smooth function of time and we read it once per day.
+
+```{python}
+def true_temperature(t):
+    """Temperature in °C at time t (in days). A slow trend plus a faster wiggle."""
+    return 10 + 3 * np.sin(2 * np.pi * t / 30) + 1.5 * np.cos(2 * np.pi * t / 11)
+
+days = np.arange(30)                 # n = 0, 1, ..., 29
+readings = true_temperature(days)    # one reading per day
+
+t_fine = np.linspace(0, 30, 3000)    # a very dense grid to draw the "true" curve
+```
+
+```{python}
+#| label: fig-temperature
+#| fig-cap: "Daily temperature readings (dots) taken from a smooth underlying curve (grey line)."
+fig, ax = plt.subplots()
+ax.plot(t_fine, true_temperature(t_fine), color="0.7", label="true temperature")
+ax.stem(days, readings, basefmt=" ", label="daily readings")
+ax.set_xlabel("day $n$")
+ax.set_ylabel("°C")
+ax.legend(loc="lower left")
+plt.show()
+```
+
+The list of readings is a **discrete-time signal**. We write its values as
+$x[n]$, where the integer $n$ is the position in the list. The square brackets
+are a reminder that $n$ only takes integer values: there is no reading at day
+2.5.
+
+The grey curve is a **continuous-time signal**, written $x(t)$ with round
+brackets, because $t$ can be any real number. Physics happens in continuous
+time; computers only ever see lists.
+
+### Processing: the average temperature
+
+What was the average temperature during the month? If we had the whole curve,
+calculus would give the answer as the area under the curve divided by the
+length of the interval:
+
+$$
+\bar{x} = \frac{1}{T}\int_0^T x(t)\, dt .
+$$
+
+With only the readings, the obvious answer is the arithmetic mean:
+
+$$
+\hat{x} = \frac{1}{N}\sum_{n=0}^{N-1} x[n] .
+$$
+
+The second formula is something anybody can compute by hand. The surprising
+part is how close it is to the first one:
+
+```{python}
+dense_average = true_temperature(t_fine).mean()    # numerical stand-in for the integral
+daily_average = readings.mean()
+
+weekly = np.arange(0, 30, 7)                       # read only on days 0, 7, 14, 21, 28
+weekly_average = true_temperature(weekly).mean()
+
+print(f"average of the continuous curve : {dense_average:6.3f} °C")
+print(f"average of 30 daily readings    : {daily_average:6.3f} °C")
+print(f"average of  5 weekly readings   : {weekly_average:6.3f} °C")
+```
+
+Daily readings reproduce the true average almost exactly. Weekly readings do
+not, and the error is not just "fewer numbers, less precision". The curve
+contains a wiggle that repeats every 11 days; reading once a week is too slow
+to follow it, and the wiggle *disguises itself* as something else in the
+samples. This effect is called **aliasing** and it is the subject of the next
+section.
+
+## Discrete time: how often should we look?
+
+Sampling means looking at a signal at regular intervals of $T_s$ seconds and
+writing down what we see:
+
+$$
+x[n] = x(n T_s).
+$$
+
+The number of samples per second, $F_s = 1/T_s$, is the **sampling frequency**.
+Between samples we know nothing. Is that a problem?
+
+It depends on how fast the signal moves. The next experiment samples a
+sinusoid that completes 3 cycles per second (3 Hz) at three different rates.
+
+```{python}
+#| label: fig-sampling-rates
+#| fig-cap: "A 3 Hz sinusoid sampled at three rates. With 4 samples per second the samples trace a much slower, 1 Hz sinusoid (dashed): this is aliasing."
+f0 = 3.0                                   # frequency of the signal, in Hz
+t = np.linspace(0, 2, 2000)                # 2 seconds of "continuous" time
+
+fig, axes = plt.subplots(3, 1, figsize=(7, 6), sharex=True)
+for ax, fs in zip(axes, [40, 8, 4]):
+    n = np.arange(0, 2 * fs)               # sample indices in 2 seconds
+    ax.plot(t, np.cos(2 * np.pi * f0 * t), color="0.75")
+    ax.stem(n / fs, np.cos(2 * np.pi * f0 * n / fs), basefmt=" ")
+    ax.set_ylabel(f"$F_s$ = {fs} Hz")
+axes[2].plot(t, np.cos(2 * np.pi * 1.0 * t), "--", color="C3")
+axes[2].set_xlabel("time (s)")
+plt.tight_layout()
+plt.show()
+```
+
+With 40 samples per second the dots follow the curve closely. With 8, the dots
+are sparse but still clearly a 3 Hz oscillation. With 4, the dots are
+*exactly* those of a 1 Hz cosine: from the samples alone, nobody could tell the
+difference. You have seen this effect in films, when the wheels of a
+stagecoach seem to turn slowly backwards while the coach speeds up.
+
+@sec-sampling makes this precise. The key result, the **sampling theorem**,
+says that if a signal contains no frequencies above $f_{\max}$, sampling it at
+more than $2 f_{\max}$ samples per second loses *no information at all*: the
+continuous signal can be rebuilt exactly from its samples
+[@shannon1949]. This is why audio CDs use 44 100 samples per second: human
+hearing stops at about 20 000 Hz.
+
+The practical consequence is huge. Once a signal is sampled fast enough, we
+can forget the continuous world and work only with lists of numbers. The time
+between samples becomes an abstract "one step", and the same algorithm works
+for stock prices, sound or radio waves.
+
+## Discrete amplitude: how precisely should we write it down?
+
+Sampling makes time discrete. The values are still real numbers with infinitely
+many decimals, which no computer can store. **Quantization** rounds each value
+to one of a finite set of levels. With $B$ bits we have $2^B$ levels.
+
+```{python}
+def quantize(x, bits, x_min=-1.0, x_max=1.0):
+    """Round each value of x to the centre of one of 2**bits equal intervals."""
+    levels = 2 ** bits
+    step = (x_max - x_min) / levels
+    index = np.clip(np.floor((x - x_min) / step), 0, levels - 1)
+    return x_min + (index + 0.5) * step
+```
+
+```{python}
+#| label: fig-quantization
+#| fig-cap: "A sinusoid quantized with 3 bits (8 levels). The error (bottom) never exceeds half a step."
+n = np.arange(60)
+x = 0.9 * np.sin(2 * np.pi * n / 30)
+xq = quantize(x, bits=3)
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True)
+ax1.plot(n, x, "o", color="0.6", label="original")
+ax1.step(n, xq, where="mid", label="quantized (3 bits)")
+ax1.legend(loc="upper right")
+ax2.stem(n, xq - x, basefmt=" ")
+ax2.set_ylabel("error")
+ax2.set_xlabel("$n$")
+plt.tight_layout()
+plt.show()
+```
+
+Rounding introduces an error, but the error is under control: it is never
+larger than half the distance between levels, and every extra bit halves that
+distance. Engineers measure the quality of the result with the
+**signal-to-noise ratio** (SNR), the ratio between the power of the signal and
+the power of the error, usually given in decibels:
+
+$$
+\text{SNR}_{\text{dB}} = 10 \log_{10}\frac{\text{signal power}}{\text{error power}} .
+$$
+
+Let us measure it for several numbers of bits:
+
+```{python}
+x = rng.uniform(-1, 1, size=100_000)         # a signal that uses the whole range
+
+print(" bits   SNR (dB)")
+for bits in [2, 4, 8, 12, 16]:
+    error = quantize(x, bits) - x
+    snr_db = 10 * np.log10(np.mean(x**2) / np.mean(error**2))
+    print(f"{bits:5d}  {snr_db:8.1f}")
+```
+
+Each extra bit adds about 6 dB: this is the famous **6 dB per bit** rule,
+derived in @sec-quantization. A CD uses 16 bits, about 96 dB, which is roughly
+the distance between a quiet room and a painfully loud concert.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it
+
+This code runs in your browser. Change `bits` and press **Run Code**. How many
+bits do you need before the quantized curve and the original look the same?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+bits = 3
+n = np.arange(60)
+x = 0.9 * np.sin(2 * np.pi * n / 30)
+
+step = 2 / 2**bits
+xq = -1 + (np.clip(np.floor((x + 1) / step), 0, 2**bits - 1) + 0.5) * step
+snr = 10 * np.log10(np.mean(x**2) / np.mean((xq - x)**2))
+
+plt.plot(n, x, "o", color="0.6")
+plt.step(n, xq, where="mid")
+plt.title(f"{bits} bits, SNR = {snr:.1f} dB")
+plt.show()
+```
+:::
+::::
+
+Quantization, unlike sampling, always loses something. That is acceptable
+because every measurement is already imprecise: a thermometer, a microphone or
+an amplifier adds its own noise. If the quantization error is smaller than the
+noise that is already there, nobody can notice it. Most of the theory in this
+book ignores quantization and treats samples as real numbers. To be precise we
+should then talk about **discrete-time** signal processing and keep the word
+*digital* for real devices, but in practice both names are used.
+
+## Why bother? Noise and copies
+
+Turning signals into numbers adds work and a small error. The reward is that
+numbers can be copied, stored and transmitted **without degradation**.
+
+Think about a long cable that carries a signal across an ocean. The cable
+weakens the signal, so every few kilometres a *repeater* has to boost it again.
+Each stretch of cable also adds a bit of noise. An analog repeater amplifies
+everything it receives, including the noise picked up so far, so noise
+accumulates along the way.
+
+A digital link sends bits as two voltage levels, $+1$ and $-1$. A digital
+repeater does not amplify what it receives: it decides whether each value is
+above or below zero and sends a *fresh*, clean $\pm 1$. As long as the noise
+in a single stretch is not large enough to flip a decision, the signal arrives
+perfect, no matter how many repeaters there are.
+
+```{python}
+def send_through_link(signal, stages, digital, attenuation=0.5, noise_std=0.1):
+    """Pass a signal through a chain of cable stretches, each followed by a repeater."""
+    s = signal.copy()
+    for _ in range(stages):
+        received = attenuation * s + rng.normal(0, noise_std, size=s.shape)
+        if digital:
+            s = np.where(received >= 0, 1.0, -1.0)   # regenerate: decide +1 or -1
+        else:
+            s = received / attenuation                # amplify: undo the loss
+    return s
+
+bits = rng.integers(0, 2, size=40)
+waveform = np.repeat(2.0 * bits - 1, 20)              # each bit lasts 20 samples
+
+analog_out = send_through_link(waveform, stages=10, digital=False)
+digital_out = send_through_link(waveform, stages=10, digital=True)
+```
+
+```{python}
+#| label: fig-regeneration
+#| fig-cap: "The same bit sequence after ten cable stretches. Analog repeaters accumulate noise; digital repeaters regenerate the signal at every step."
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True, sharey=True)
+for ax, out, title in zip(axes, [analog_out, digital_out],
+                          ["10 analog repeaters", "10 digital repeaters"]):
+    ax.plot(waveform, color="0.75", lw=3, label="transmitted")
+    ax.plot(out, lw=1, label="received")
+    ax.set_title(title, fontsize=10)
+axes[0].legend(loc="upper right", fontsize=8)
+axes[1].set_xlabel("sample")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+received_bits = (digital_out[::20] > 0).astype(int)
+print("bit errors after 10 digital repeaters:", np.sum(received_bits != bits))
+```
+
+The same reasoning explains why a copy of a copy of a music file sounds
+exactly like the original, while a copy of a copy of a cassette tape gets
+noisier every time. It is also the reason why modern systems, even radios,
+move to the digital domain as early as possible and come back to the analog
+world only at the very end.
+
+Real channels are noisier than this example, and occasionally a decision is
+wrong. Error-correcting codes add a little redundancy so that the receiver can
+detect and fix those mistakes; this is the domain of information theory
+[@shannon1948]. In @sec-modem we build a complete digital transmitter and
+receiver and measure how often it makes mistakes.
+
+## The big picture
+
+A typical DSP system looks like this:
+
+```{python}
+#| label: fig-dsp-chain
+#| fig-cap: "The structure of almost every DSP system. Everything between the A/D and D/A converters is a program working on lists of numbers."
+#| echo: false
+blocks = ["analog\nfilter", "sampler", "quantizer", "digital\nprocessing", "D/A\nconverter"]
+fig, ax = plt.subplots(figsize=(8, 1.6))
+for i, label in enumerate(blocks):
+    x0 = 1.2 + i * 1.5
+    face = "#dbe9f6" if label.startswith("digital") else "white"
+    ax.add_patch(plt.Rectangle((x0, 0.25), 1.1, 0.7, facecolor=face, edgecolor="black"))
+    ax.text(x0 + 0.55, 0.6, label, ha="center", va="center", fontsize=8)
+    ax.annotate("", xy=(x0, 0.6), xytext=(x0 - 0.4, 0.6), arrowprops=dict(arrowstyle="->"))
+ax.annotate("", xy=(9.2, 0.6), xytext=(8.8, 0.6), arrowprops=dict(arrowstyle="->"))
+ax.text(0.75, 0.6, "physical\nsignal", ha="right", va="center", fontsize=9)
+ax.text(9.25, 0.6, "physical\nsignal", ha="left", va="center", fontsize=9)
+ax.text(4.0, 0.02, "A/D converter", ha="center", fontsize=9, style="italic")
+ax.plot([2.7, 5.3], [0.17, 0.17], color="0.4")
+ax.set_xlim(-0.6, 10.3); ax.set_ylim(0, 1); ax.axis("off")
+plt.show()
+```
+
+The sampler and the quantizer form the **A/D converter** (analog to digital).
+The middle block is just a program. The **D/A converter** at the end turns
+numbers back into a voltage. Most of this book lives in the middle block, where
+everything is a list of numbers; Part IV returns to the edges.
+
+## Summary
+
+- A discrete-time signal is a list of numbers $x[n]$ indexed by an integer.
+- **Sampling** makes time discrete. If it is fast enough (more than twice the
+  highest frequency in the signal) nothing is lost; if it is too slow,
+  frequencies disguise themselves as others (**aliasing**).
+- **Quantization** makes values discrete. It always adds a small error, about
+  6 dB less noise for each extra bit.
+- Digital signals can be copied and transmitted without accumulating noise,
+  which is the main reason the world went digital.
+
+## Exercises
+
+1. In the temperature example, read the thermometer every 2, 3, 5 and 10 days
+   and compute the average each time. Which sampling intervals give an
+   accurate average? Can you relate the answer to the 11-day wiggle?
+2. Sample a 3 Hz cosine at $F_s = 5$ Hz. Which slower cosine produces exactly
+   the same samples? Check your answer by plotting both. Repeat with
+   $F_s = 2.5$ Hz.
+3. Repeat the SNR measurement with a sinusoid of amplitude 1 instead of a
+   uniform random signal. By how many decibels does the result change? What
+   happens with a sinusoid of amplitude 0.1?
+4. In the repeater simulation, increase `noise_std` until the digital link
+   starts making errors. Plot the number of bit errors as a function of
+   `noise_std`. What happens to the analog link at the same noise level?
+5. A temperature sensor has an accuracy of $\pm 0.1$ °C over a range of
+   $-40$ °C to $+60$ °C. How many bits are enough to store its readings without
+   making them worse?

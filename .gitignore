@@ -1,0 +1,28 @@
+# Quarto output and caches
+/_book/
+/.quarto/
+/_freeze/
+**/*.quarto_ipynb
+/*.html
+/chapters/*.html
+/appendices/*.html
+*_files/
+
+# Python
+__pycache__/
+.ipynb_checkpoints/
+/.venv/
+
+# LaTeX leftovers
+*.aux
+*.log
+*.out
+*.toc
+*.tex
+!styles/*.tex
+
+# Operating system and editor
+.DS_Store
+Thumbs.db
+*.swp
+*~

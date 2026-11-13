@@ -1,0 +1,18 @@
+/*-- scss:defaults --*/
+$font-size-root: 17px;
+$line-height-base: 1.6;
+
+/*-- scss:rules --*/
+// Keep figures readable on narrow screens and in dark mode.
+.cell-output-display img,
+.cell-output-display svg {
+  max-width: 100%;
+  height: auto;
+  background: #ffffff;
+  border-radius: 4px;
+}
+
+// "Try it" boxes hold the in-browser (Pyodide) exercises.
+.callout-tip .exercise-cell {
+  margin-top: 0.5rem;
+}

@@ -1,0 +1,47 @@
+name: Build and publish the book
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: book-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the book image
+        run: docker build --platform linux/amd64 -f docker/Dockerfile -t dsp-book:ci .
+      - name: Render HTML and PDF offline
+        run: >-
+          docker run --rm --platform linux/amd64 --network none
+          --user "$(id -u):$(id -g)" --env HOME=/tmp
+          --mount "type=bind,source=$PWD,target=/work"
+          dsp-book:ci quarto render
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: _book
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,16 @@
+# Multirate Processing {#sec-multirate}
+
+Changing the sampling rate without going back to the analog world.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Downsampling and aliasing
+- Upsampling and interpolation filters
+- Rational rate changes: 44.1 kHz to 48 kHz
+- Oversampling in A/D and D/A conversion

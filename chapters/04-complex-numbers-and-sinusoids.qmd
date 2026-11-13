@@ -1,0 +1,17 @@
+# Complex Numbers and Sinusoids {#sec-complex-numbers}
+
+Complex numbers are introduced from zero, as a compact way to describe rotation, amplitude and phase.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Complex numbers as points and arrows in the plane
+- Multiplication as rotation and scaling; Euler's formula built up numerically
+- The complex exponential as a rotating point; negative frequencies
+- Digital frequency and why it only goes up to π
+- Aliasing of sinusoids: the wagon-wheel effect

@@ -1,0 +1,19 @@
+# LTI Systems and Convolution {#sec-lti}
+
+Filters are systems that are linear and time-invariant. Such a system is fully described by its response to a single impulse.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Linearity and time invariance, with counterexamples
+- The impulse response and the convolution sum
+- FIR and IIR filters, causality and stability
+- Two smoothers: the moving average and the leaky integrator
+- The frequency response; the convolution theorem
+- Convolution in continuous time, as the limit of the discrete sum (intuition only)
+- Correlation revisited: matched filtering

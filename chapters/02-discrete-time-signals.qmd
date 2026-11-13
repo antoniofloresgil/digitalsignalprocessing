@@ -1,0 +1,20 @@
+# Discrete-Time Signals {#sec-discrete-time-signals}
+
+A signal is just a list of numbers indexed by an integer. This chapter builds the vocabulary used in the rest of the book.
+
+::: {.callout-note}
+## Draft chapter
+This chapter is planned but not yet written. The outline below is the
+working plan.
+:::
+
+## Planned contents
+
+- Sequences and the `x[n]` notation; why the index has no units
+- The basic building blocks: impulse, unit step, exponential, sinusoid
+- Shifting, scaling, adding and multiplying signals in NumPy
+- Energy and power
+- Finite-length, periodic and infinite signals, and how code represents each one
+- Transforming the time axis: reversal, shifting, compression and expansion of the index
+- Even and odd parts of a signal
+- A short look at continuous-time signals and how they compare with discrete ones

@@ -1,0 +1,6 @@
+.git
+_book
+_freeze
+.quarto
+**/__pycache__
+**/.ipynb_checkpoints

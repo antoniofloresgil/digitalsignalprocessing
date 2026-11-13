@@ -1,0 +1,11 @@
+# Packages used by the chapter code and by Quarto's Jupyter engine.
+# Keep the scientific stack small: everything here must also be explained
+# to (or at least not get in the way of) the reader.
+numpy==2.3.1
+scipy==1.16.0
+matplotlib==3.10.3
+jupyterlab==4.4.4
+ipykernel==6.29.5
+nbclient==0.10.2
+nbformat==5.10.4
+pyyaml==6.0.2
