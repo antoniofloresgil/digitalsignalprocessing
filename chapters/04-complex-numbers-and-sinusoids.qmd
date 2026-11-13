@@ -347,28 +347,120 @@ stop = (2 * np.pi / spokes) * fps * (diameter / 2) * 3.6           # first speed
 print(f"the wheel appears to stand still at {stop:.1f} km/h")
 ```
 
+To *see* the effect, we film three wheels with 5 spokes, which turn by 68°,
+72° and 76° between frames. A rotation by 72°, one fifth of a turn, brings
+every spoke to the position of the next one. One spoke is painted red, so that
+the true rotation stays visible.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Code that draws the wheels and builds the animation"
+import io, base64
+from PIL import Image
+
+def draw_wheels(axes, steps_deg, frame, spokes=5):
+    """Draw, for one film frame, one wheel per rotation step (in degrees per frame)."""
+    for ax, step in zip(axes, steps_deg):
+        angles = np.radians(step * frame) + 2 * np.pi * np.arange(spokes) / spokes
+        ax.add_patch(plt.Circle((0, 0), 1, fill=False, color="0.3", lw=2))
+        for a in angles:
+            ax.plot([0, np.cos(a)], [0, np.sin(a)], color="0.3", lw=2)
+        ax.plot([0, np.cos(angles[0])], [0, np.sin(angles[0])], color="C3", lw=3)   # marked spoke
+        ax.set_xlim(-1.15, 1.15); ax.set_ylim(-1.15, 1.15); ax.set_aspect("equal"); ax.axis("off")
+
+class AnimatedGIF:
+    """Frames rendered with Matplotlib, shown as an animated GIF in HTML."""
+    def __init__(self, steps_deg, titles, n_frames=45, ms=110):
+        frames = []
+        for frame in range(n_frames):
+            fig, axes = plt.subplots(1, len(steps_deg), figsize=(2.3 * len(steps_deg), 2.6), dpi=72)
+            draw_wheels(np.atleast_1d(axes), steps_deg, frame)
+            for ax, title in zip(np.atleast_1d(axes), titles):
+                ax.set_title(title, fontsize=10)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png")
+            plt.close(fig)
+            frames.append(Image.open(buf).convert("RGB"))
+        out = io.BytesIO()
+        frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:], duration=ms, loop=0)
+        self.b64 = base64.b64encode(out.getvalue()).decode()
+
+    def _repr_html_(self):
+        return f'<img src="data:image/gif;base64,{self.b64}" alt="Three filmed wheels" style="max-width:100%">'
+
+steps = [68, 72, 76]
+titles = ["68°: seems to turn back", "72°: seems to stand still", "76°: seems to creep forward"]
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+#| echo: false
+AnimatedGIF(steps, titles)
+```
+
+The animation plays the film frames slowly. In all three wheels the red spoke
+jumps forward by more than a fifth of a turn at every frame, yet the pattern of
+spokes seems to turn backwards, stand still or creep forwards. The apparent
+step is the true one reduced into $[-36°, 36°)$: $-4°$, $0°$ and $+4°$ per frame.
+:::
+
+::: {.content-visible when-format="pdf"}
+```{python}
+#| label: fig-wagon-frames
+#| fig-cap: "Six consecutive frames of three filmed wheels with 5 spokes, turning by $68^\\circ$, $72^\\circ$ and $76^\\circ$ between frames (rows). The red spoke shows the true rotation; the pattern of spokes seems to turn back by $4^\\circ$ per frame, to stand still, or to creep forward by $4^\\circ$ per frame. The HTML edition shows this as an animation."
+#| echo: false
+fig, axes = plt.subplots(3, 6, figsize=(7, 3.8))
+for frame in range(6):
+    draw_wheels(axes[:, frame], steps, frame)
+    axes[0, frame].set_title(f"frame {frame}", fontsize=9)
+for row, step in enumerate(steps):
+    axes[row, 0].text(-1.5, 0, f"{step}°", ha="right", va="center", fontsize=10)
+plt.tight_layout()
+plt.show()
+```
+:::
+
 :::: {.content-visible when-format="html"}
 ::: {.callout-tip}
 ## Try it: the wheel on film
 
-Draw the wheel as it appears in consecutive frames. Choose `step_deg`, the true
-rotation between frames, and the number of `spokes`. Which values make the
-wheel seem to turn backwards? Which make it stand still?
+Choose the true rotations between frames, `steps_deg`, and the number of
+`spokes`, and press **Run Code** to film the wheels. Which values make a wheel
+seem to turn backwards? Which make it stand still? Predict each apparent motion
+with the rule of this section before running the code.
 
 ```{.pyodide}
+import io, base64
 import numpy as np
 import matplotlib.pyplot as plt
+from PIL import Image
 
-step_deg, spokes = 68, 5
-fig, axes = plt.subplots(1, 5, figsize=(9, 2))
-for frame, ax in enumerate(axes):
-    angles = np.radians(step_deg * frame) + 2 * np.pi * np.arange(spokes) / spokes
-    for a in angles:
-        ax.plot([0, np.cos(a)], [0, np.sin(a)], color="0.4")
-    ax.plot(np.cos(angles[0]), np.sin(angles[0]), "o", color="C3")   # one marked spoke
-    ax.set_xlim(-1.1, 1.1); ax.set_ylim(-1.1, 1.1); ax.set_aspect("equal"); ax.axis("off")
-    ax.set_title(f"frame {frame}", fontsize=8)
-plt.show()
+steps_deg, spokes = [68, 72, 76], 5
+n_frames, ms_per_frame = 30, 110
+
+class Film:
+    def __init__(self):
+        frames = []
+        for frame in range(n_frames):
+            fig, axes = plt.subplots(1, len(steps_deg), figsize=(2.3 * len(steps_deg), 2.6), dpi=72)
+            for ax, step in zip(np.atleast_1d(axes), steps_deg):
+                angles = np.radians(step * frame) + 2 * np.pi * np.arange(spokes) / spokes
+                ax.add_patch(plt.Circle((0, 0), 1, fill=False, color="0.3", lw=2))
+                for a in angles:
+                    ax.plot([0, np.cos(a)], [0, np.sin(a)], color="0.3", lw=2)
+                ax.plot([0, np.cos(angles[0])], [0, np.sin(angles[0])], color="C3", lw=3)
+                ax.set_xlim(-1.15, 1.15); ax.set_ylim(-1.15, 1.15)
+                ax.set_aspect("equal"); ax.axis("off"); ax.set_title(f"{step} deg per frame")
+            buf = io.BytesIO(); fig.savefig(buf, format="png"); plt.close(fig)
+            frames.append(Image.open(buf).convert("RGB"))
+        out = io.BytesIO()
+        frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:],
+                       duration=ms_per_frame, loop=0)
+        self.b64 = base64.b64encode(out.getvalue()).decode()
+    def _repr_html_(self):
+        return f'<img src="data:image/gif;base64,{self.b64}" style="max-width:100%">'
+
+Film()
 ```
 :::
 ::::

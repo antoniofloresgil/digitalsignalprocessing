@@ -88,3 +88,14 @@
   compensate explicitly.
 - **PDF contents geometry.** KOMA's dynamic number widths in the contents need
   more LaTeX runs than Quarto performs, so `styles/book.tex` fixes the widths.
+
+## 2026-11-13: animations
+
+- **Animations are animated GIFs.** quarto-live inserts HTML outputs with
+  `innerHTML`, so `<script>`-based animations (`FuncAnimation.to_jshtml`) do not
+  run in *Try it* boxes. Instead, frames are drawn with Matplotlib, joined into
+  a GIF with Pillow (a Matplotlib dependency, available in the container and in
+  Pyodide), and returned by an object whose `_repr_html_` is an
+  `<img src="data:image/gif;base64,...">`. Build-time animations go inside
+  `content-visible when-format="html"`, with a static frame-strip figure for the
+  PDF. First use: the wagon-wheel animation in chapter 4.
