@@ -1,12 +1,138 @@
 # Math Toolbox {#sec-math-toolbox}
 
 Short refreshers on the mathematics used in the book, written to be looked up
-rather than read in one go.
+when needed. Each entry says where in the book the tool is introduced or used.
 
-::: {.callout-note}
-## Draft appendix
-Planned entries: sums and the geometric series; radians, sine and cosine;
-trigonometric identities used in the book; complex numbers summary;
-vectors, matrices and matrix–vector products; mean, variance and the
-Gaussian distribution; decibels.
-:::
+```{python}
+import numpy as np
+from scipy import stats, special
+```
+
+## Sums
+
+**Finite geometric series.** For a complex $w \ne 1$ and $N \ge 1$,
+$$
+\sum_{n=0}^{N-1}w^n = \frac{1 - w^N}{1 - w}.
+$$
+Proof: multiply the sum by $1 - w$ and cancel. Used for sums of complex
+exponentials (@prp-sum-of-roots), the DTFT of a pulse
+(@exm-dtft-pulse-exponential) and the z-transform (@exm-z-transforms).
+
+**Infinite geometric series.** For $|w| < 1$, $\sum_{n=0}^{\infty}w^n = \frac{1}{1 - w}$,
+and the series converges absolutely.
+
+**Telescoping sums.** $\sum_{n=M}^{N}(a_{n+1} - a_n) = a_{N+1} - a_M$. Used in
+@prp-full-period-average, @lem-bounded-cosine-sums and @prp-accumulate-difference.
+
+**Absolute convergence.** A series $\sum a_n$ of real or complex numbers
+converges absolutely if $\sum|a_n| < \infty$. Then it converges, its terms can be
+reordered or grouped freely, and double series can be summed in either order.
+This justifies every exchange of sums in the book, for example in
+@thm-convolution-theorem.
+
+**Harmonic series.** $\sum_{n\ge1}1/n$ diverges (its partial sums grow like
+$\ln N$), while $\sum_{n\ge1}1/n^2 = \pi^2/6$. See @prp-summability.
+
+```{python}
+w, N = 0.3 + 0.4j, 50
+assert np.isclose(np.sum(w ** np.arange(N)), (1 - w ** N) / (1 - w))
+```
+
+## Trigonometry
+
+All of these follow from Euler's formula, $e^{j\theta} = \cos\theta + j\sin\theta$
+(@thm-euler), by comparing real and imaginary parts.
+
+| identity | from |
+|----------|------|
+| $\cos(a \pm b) = \cos a\cos b \mp \sin a\sin b$ | $e^{j(a \pm b)} = e^{ja}e^{\pm jb}$ |
+| $\sin(a \pm b) = \sin a\cos b \pm \cos a\sin b$ | same |
+| $\cos^2a = \frac12(1 + \cos2a)$, $\sin^2a = \frac12(1 - \cos2a)$ | $a = b$ above |
+| $2\cos a\cos b = \cos(a - b) + \cos(a + b)$ | add the two cosine formulas |
+| $2\sin a\cos b = \sin(a + b) + \sin(a - b)$ | add the two sine formulas |
+| $\cos\theta = \frac{e^{j\theta} + e^{-j\theta}}{2}$, $\sin\theta = \frac{e^{j\theta} - e^{-j\theta}}{2j}$ | @cor-euler |
+
+: Trigonometric identities used in the book. {#tbl-trig}
+
+## Complex numbers
+
+| notion | definition | NumPy |
+|--------|------------|-------|
+| real and imaginary part | $z = a + jb$ | `z.real`, `z.imag` |
+| conjugate | $\bar z = a - jb$ | `np.conj(z)` |
+| modulus | $\lvert z\rvert = \sqrt{a^2 + b^2} = \sqrt{z\bar z}$ | `np.abs(z)` |
+| argument | angle of $z$ in $(-\pi, \pi]$ | `np.angle(z)` |
+| polar form | $z = \lvert z\rvert e^{j\arg z}$ | `np.abs(z) * np.exp(1j * np.angle(z))` |
+| product | moduli multiply, arguments add | `z * w` |
+
+: Complex numbers in brief (@sec-complex-numbers). {#tbl-complex}
+
+## Linear algebra
+
+For vectors in $\mathbb{C}^N$ with $\langle\mathbf{x},\mathbf{y}\rangle = \sum x[n]\overline{y[n]}$
+(@def-complex-inner-product):
+
+- **Cauchy–Schwarz:** $|\langle\mathbf{x},\mathbf{y}\rangle| \le \|\mathbf{x}\|\|\mathbf{y}\|$ (@thm-cauchy-schwarz).
+- **Orthonormal basis:** $\mathbf{x} = \sum_k\langle\mathbf{x},\mathbf{e}_k\rangle\mathbf{e}_k$ and
+  $\|\mathbf{x}\|^2 = \sum_k|\langle\mathbf{x},\mathbf{e}_k\rangle|^2$ (@thm-orthonormal-expansion).
+- **Unitary matrix:** $U^{\mathsf H}U = I$; it preserves inner products and norms.
+  $\frac1{\sqrt N}$ times the DFT matrix is unitary (@thm-fourier-orthogonality).
+- **Least squares:** $\min\|\mathbf{y} - A\mathbf{c}\|$ is attained when
+  $A^{\mathsf H}(\mathbf{y} - A\mathbf{c}) = \mathbf{0}$ (@prp-least-squares);
+  `np.linalg.lstsq` solves it.
+
+## Fourier transforms at a glance
+
+| transform | signal | transform | inverse |
+|-----------|--------|-----------|---------|
+| DFT (@def-dft) | $x[n]$, $0 \le n < N$ | $X[k] = \sum_nx[n]e^{-j2\pi kn/N}$ | $x[n] = \frac1N\sum_kX[k]e^{j2\pi kn/N}$ |
+| DTFT (@def-dtft) | $x[n]$, $n \in \mathbb{Z}$ | $X(e^{j\omega}) = \sum_nx[n]e^{-j\omega n}$ | $x[n] = \frac1{2\pi}\int_{-\pi}^{\pi}X(e^{j\omega})e^{j\omega n}d\omega$ |
+| z-transform (@def-z-transform) | $x[n]$, $n \in \mathbb{Z}$ | $X(z) = \sum_nx[n]z^{-n}$, on the ROC | (not needed) |
+| Fourier series (@def-fourier-series) | $x(t)$, period $T$ | $c_k = \frac1T\int_0^Tx(t)e^{-j2\pi kt/T}dt$ | $x(t) = \sum_kc_ke^{j2\pi kt/T}$ |
+| Fourier transform (@def-fourier-transform) | $x(t)$, $t \in \mathbb{R}$ | $X(f) = \int x(t)e^{-j2\pi ft}dt$ | $x(t) = \int X(f)e^{j2\pi ft}df$ |
+
+: The Fourier transforms of the book. {#tbl-transforms tbl-colwidths="[20,14,33,33]"}
+
+In every case: delays become multiplications by a phase factor, convolution
+becomes multiplication, and energy is preserved up to a constant (Parseval).
+
+## Probability
+
+| notion | definition | NumPy / SciPy |
+|--------|------------|---------------|
+| mean | $\mathbb{E}[X]$ | `x.mean()` (sample estimate) |
+| variance | $\mathbb{E}[(X - \mathbb{E}X)^2] = \mathbb{E}[X^2] - (\mathbb{E}X)^2$ | `x.var()` |
+| covariance | $\mathbb{E}[XY] - \mathbb{E}X\,\mathbb{E}Y$ | `np.cov(x, y)` |
+| uniform on $[a, b]$ | mean $\frac{a+b}2$, variance $\frac{(b-a)^2}{12}$ | `rng.uniform(a, b, n)` |
+| Gaussian $\mathcal{N}(\mu, \sigma^2)$ | density $\frac{1}{\sqrt{2\pi}\sigma}e^{-(x-\mu)^2/2\sigma^2}$ | `rng.normal(mu, sigma, n)` |
+| Gaussian tail | $\mathcal{Q}(z) = P(Z > z)$, $Z \sim \mathcal{N}(0, 1)$ | `stats.norm.sf(z)` |
+
+: Probability in brief (@sec-noise). {#tbl-probability}
+
+Useful facts: variances of independent (or merely uncorrelated) variables add;
+a sum of independent Gaussian variables is Gaussian; $\mathcal{Q}(z) \le \frac12e^{-z^2/2}$ for
+$z \ge 0$, so tail probabilities fall off very fast; and
+$\mathcal{Q}(z) = \frac12\operatorname{erfc}(z/\sqrt2)$.
+
+```{python}
+z = np.linspace(0, 6, 61)
+assert np.allclose(stats.norm.sf(z), 0.5 * special.erfc(z / np.sqrt(2)))
+assert np.all(stats.norm.sf(z) <= 0.5 * np.exp(-z ** 2 / 2) + 1e-15)
+print("Q(1), Q(2), Q(3), Q(5):", stats.norm.sf([1, 2, 3, 5]))
+```
+
+## Decibels
+
+A ratio of powers $P_1/P_2$ is $10\log_{10}(P_1/P_2)$ dB; a ratio of amplitudes
+$A_1/A_2$ is $20\log_{10}(A_1/A_2)$ dB, because power goes with the square of
+amplitude. Values worth remembering:
+
+| dB | power ratio | amplitude ratio |
+|----|-------------|-----------------|
+| 3 | 2 | 1.41 |
+| 6 | 4 | 2 |
+| 10 | 10 | 3.16 |
+| 20 | 100 | 10 |
+| 60 | $10^6$ | 1000 |
+
+: Common decibel values. {#tbl-decibels}

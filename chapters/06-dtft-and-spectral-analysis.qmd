@@ -1,19 +1,622 @@
 # Spectral Analysis in Practice {#sec-spectral-analysis}
 
-Real signals are long, and their spectra are continuous. This chapter turns the DFT into a practical tool.
+The DFT of @sec-dft describes a vector of $N$ samples with $N$ frequencies. Real
+questions are less tidy. A recording is a short piece of a much longer signal.
+The frequencies we look for rarely fall exactly on a bin. A signal can change
+its frequency content over time, like speech or a sequence of phone tones. And
+sampled signals come from continuous ones, with their own notion of frequency.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+This chapter deals with all four. It introduces the **discrete-time Fourier
+transform** (DTFT), the spectrum of an infinite sequence, and shows that the DFT
+samples it. It explains **leakage** and how windows control it, builds the
+**spectrogram** for signals that change over time, and ends with the
+**Fourier series** and the **Fourier transform** of continuous-time signals,
+just as far as Part IV needs them. The material corresponds to Sections
+4.3–4.9 of @prandoni2008.
+
+By the end of the chapter you should be able to:
+
+- compute and invert the DTFT, and relate it to the DFT;
+- explain what zero padding does and does not do;
+- choose a window by trading resolution against leakage;
+- read and compute a spectrogram, and decode a sequence of tones with it;
+- compute Fourier series numerically and explain the Gibbs phenomenon;
+- state what it means for a continuous-time signal to be bandlimited.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal, special
+
+rng = np.random.default_rng(6)
+plt.rcParams["figure.figsize"] = (7, 3)
+
+def dtft(x, n, omega):
+    """DTFT of the finite-support signal with values x at indices n, at frequencies omega."""
+    return np.exp(-1j * np.outer(omega, n)) @ x
+
+def db(v):
+    return 20 * np.log10(np.maximum(np.abs(v), 1e-12))
+```
+
+## The discrete-time Fourier transform
+
+The DFT uses $N$ frequencies because a vector has $N$ degrees of freedom. An
+infinite sequence needs a continuum of them.
+
+::: {#def-dtft}
+## DTFT
+
+The **DTFT** of an absolutely summable signal $x$ is the function
+$$
+X(e^{j\omega}) = \sum_{n=-\infty}^{\infty} x[n]\,e^{-j\omega n}, \qquad \omega \in \mathbb{R}.
+$$
 :::
 
-## Planned contents
+The notation $X(e^{j\omega})$ is traditional: the DTFT depends on $\omega$ only
+through $e^{j\omega}$, and @sec-z-transform will replace $e^{j\omega}$ by a general
+complex number $z$.
 
-- From the DFT to the DTFT, intuitively
-- Zero padding: prettier plots, no new information
-- Windows and spectral leakage
-- Time-frequency analysis: the spectrogram and the uncertainty trade-off
-- Digital frequency vs. frequency in hertz
-- Fourier series of a periodic continuous signal, built up numerically (square wave, Gibbs phenomenon)
-- A bridge to the continuous-time Fourier transform, only at the level needed for sampling
+::: {#prp-dtft-basics}
+## Basic properties of the DTFT
+
+Let $x$ be absolutely summable. Then:
+
+1. the series converges absolutely and uniformly in $\omega$, and
+   $|X(e^{j\omega})| \le \sum_n |x[n]|$;
+2. $X(e^{j\omega})$ is continuous and $2\pi$-periodic in $\omega$;
+3. (**inversion**) for every $n$,
+   $\displaystyle x[n] = \frac{1}{2\pi}\int_{-\pi}^{\pi} X(e^{j\omega})\,e^{j\omega n}\,d\omega$.
+:::
+
+::: {.proof}
+(1) $|x[n]e^{-j\omega n}| = |x[n]|$, a summable bound independent of $\omega$
+(Weierstrass M-test). (2) Each term is continuous and $2\pi$-periodic, and a
+uniform limit of continuous functions is continuous. (3) Uniform convergence
+allows integrating term by term:
+$\frac1{2\pi}\int_{-\pi}^{\pi}\sum_m x[m]e^{-j\omega m}e^{j\omega n}d\omega = \sum_m x[m]\frac1{2\pi}\int_{-\pi}^{\pi}e^{j\omega(n - m)}d\omega$,
+and the integral is $2\pi$ if $m = n$ and $0$ otherwise, since
+$e^{j\omega(n - m)}$ then completes $|n - m|$ whole turns.
+:::
+
+The inversion formula expresses $x$ as a "sum" of complex exponentials
+$e^{j\omega n}$ for every $\omega \in [-\pi, \pi)$, with complex amplitude
+$X(e^{j\omega})\,d\omega/(2\pi)$. Energy is preserved, as for the DFT:
+$\sum_n|x[n]|^2 = \frac1{2\pi}\int_{-\pi}^{\pi}|X(e^{j\omega})|^2d\omega$ (Parseval).
+For signals with finite support this follows by expanding the square and
+integrating term by term as in (3). The DTFT, inversion and Parseval also extend
+to every finite-energy signal; the series then converges in the energy sense
+rather than at every $\omega$ (Chapter 4 of @prandoni2008). For real $x$,
+$X(e^{-j\omega}) = \overline{X(e^{j\omega})}$, so $|X|$ is even and we usually plot
+only $[0, \pi]$.
+
+::: {#exm-dtft-pulse-exponential}
+## Two transforms worth knowing
+
+*Rectangular pulse.* For $r_N[n] = 1$ when $0 \le n \le N-1$ and $0$ otherwise,
+the geometric series gives, for $\omega \notin 2\pi\mathbb{Z}$,
+$$
+R_N(e^{j\omega}) = \sum_{n=0}^{N-1}e^{-j\omega n} = \frac{1 - e^{-j\omega N}}{1 - e^{-j\omega}}
+= e^{-j\omega\frac{N-1}{2}}\,\frac{\sin(\omega N/2)}{\sin(\omega/2)},
+$$
+and $R_N(e^{j0}) = N$. The last step factors $e^{-j\omega N/2}$ from the
+numerator and $e^{-j\omega/2}$ from the denominator and uses
+$e^{j\alpha} - e^{-j\alpha} = 2j\sin\alpha$.
+
+*One-sided exponential.* For $|a| < 1$,
+$\sum_{n\ge0}a^ne^{-j\omega n} = \dfrac{1}{1 - ae^{-j\omega}}$.
+:::
+
+```{python}
+#| label: fig-dtft-examples
+#| fig-cap: "Magnitude of the DTFT of a rectangular pulse of length 8 (left) and of $0.8^n u[n]$ (right), computed from the definition (dots) and from the closed forms (lines)."
+omega = np.linspace(-np.pi, np.pi, 1001)
+w = omega[::25]
+
+N = 8
+pulse_closed = np.where(np.isclose(omega, 0), N,
+                        np.abs(np.sin(omega * N / 2) / np.sin(np.where(omega == 0, 1, omega) / 2)))
+exp_closed = np.abs(1 / (1 - 0.8 * np.exp(-1j * omega)))
+
+n_long = np.arange(200)                                    # 0.8^200 ≈ 4e-20: truncation is harmless
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 2.8))
+ax1.plot(omega, pulse_closed)
+ax1.plot(w, np.abs(dtft(np.ones(N), np.arange(N), w)), ".", color="C3")
+ax1.set_title("rectangular pulse, N = 8", fontsize=10)
+ax2.plot(omega, exp_closed)
+ax2.plot(w, np.abs(dtft(0.8 ** n_long, n_long, w)), ".", color="C3")
+ax2.set_title(r"$0.8^n u[n]$", fontsize=10)
+for ax in (ax1, ax2):
+    ax.set_xlabel(r"$\omega$")
+plt.tight_layout()
+plt.show()
+
+assert np.allclose(np.abs(dtft(np.ones(N), np.arange(N), omega)), pulse_closed)
+assert np.allclose(dtft(0.8 ** n_long, n_long, omega), 1 / (1 - 0.8 * np.exp(-1j * omega)))
+```
+
+The pulse transform has a **main lobe** around $\omega = 0$, of width $4\pi/N$
+between its first zeros at $\pm 2\pi/N$, and **side lobes** that decay slowly.
+Both features will matter shortly.
+
+## The DFT samples the DTFT
+
+::: {#prp-dft-samples-dtft}
+## DFT and DTFT
+
+Let $x$ have finite support contained in $[0, L-1]$, and let $N \ge L$. If
+$\mathbf{x}_N$ is the vector $x[0], \dots, x[L-1]$ padded with $N - L$ zeros, then
+its DFT is
+$$
+X_N[k] = X(e^{j2\pi k/N}), \qquad k = 0, \dots, N-1 .
+$$
+:::
+
+::: {.proof}
+Both are $\sum_{n=0}^{L-1}x[n]e^{-j2\pi kn/N}$: the padded zeros add nothing.
+:::
+
+So the DFT of a finite signal shows its DTFT at $N$ equally spaced frequencies.
+**Zero padding**, that is computing the DFT with $N$ larger than the signal,
+shows *the same DTFT* at more frequencies. It draws a smoother picture but adds
+no information: the DTFT was already determined by the $L$ samples, and
+@thm-dft-inversion recovers them from any $N \ge L$ of its samples.
+
+```{python}
+#| label: fig-zero-padding
+#| fig-cap: "DFT of 16 samples of a sinusoid (dots) and of the same samples zero-padded to 128 and 1024 points. All three lie on the same DTFT; padding only samples it more densely."
+L = 16
+x = np.cos(2 * np.pi * 0.21 * np.arange(L))
+fig, ax = plt.subplots()
+for N, style in [(1024, "-"), (128, "."), (16, "o")]:
+    k = np.arange(N // 2 + 1)
+    ax.plot(2 * np.pi * k / N, np.abs(np.fft.fft(x, N)[: N // 2 + 1]), style, label=f"N = {N}", ms=5)
+ax.set_xlabel(r"$\omega$")
+ax.legend()
+plt.show()
+
+N = 128
+assert np.allclose(np.fft.fft(x, N), dtft(x, np.arange(L), 2 * np.pi * np.arange(N) / N))
+```
+
+## Leakage and windows
+
+A recording of $L$ samples is a long signal $s$ multiplied by the rectangular
+pulse $r_L$: we see $x[n] = s[n]\,r_L[n]$. What does multiplication do to the
+spectrum?
+
+::: {#prp-dtft-modulation}
+## Modulation by a complex exponential
+
+If $y[n] = e^{j\omega_0 n}w[n]$, with $w$ absolutely summable, then
+$Y(e^{j\omega}) = W(e^{j(\omega - \omega_0)})$.
+:::
+
+::: {.proof}
+$\sum_n e^{j\omega_0n}w[n]e^{-j\omega n} = \sum_n w[n]e^{-j(\omega - \omega_0)n}$.
+:::
+
+A window applied to $A\cos(\omega_0 n + \varphi)$ therefore gives, by
+@eq-cos-two-exponentials and linearity,
+$$
+X(e^{j\omega}) = \frac A2e^{j\varphi}W(e^{j(\omega - \omega_0)}) + \frac A2e^{-j\varphi}W(e^{j(\omega + \omega_0)}) .
+$$
+Instead of two infinitely thin spectral lines at $\pm\omega_0$, we see two copies
+of the window's transform. Its main lobe limits **resolution**: two sinusoids
+closer than about one main-lobe width merge into one peak. Its side lobes cause
+**leakage**: a strong sinusoid spreads energy over the whole spectrum and can
+hide a weak one far away. The DFT samples this picture; when $\omega_0$ falls
+exactly on a bin, the samples hit the zeros of the side lobes, which is why
+@prp-dft-of-cosine found clean spikes, and why that case is the exception.
+
+The remedy is to replace $r_L$ by a **window** that goes smoothly to zero at
+both ends, such as the **Hann window**
+$w[n] = \frac12\big(1 - \cos(2\pi n/L)\big)$, $0 \le n \le L-1$. Its side lobes are
+much lower, at the price of a main lobe twice as wide. We measure both for
+$L = 64$:
+
+```{python}
+#| label: fig-windows
+#| fig-cap: "Normalised DTFT magnitude, in dB, of the rectangular and Hann windows of length 64. The Hann window trades a main lobe twice as wide for side lobes about 18 dB lower, which then fall off much faster."
+L, Npad = 64, 1 << 16
+omega = 2 * np.pi * np.arange(Npad // 2) / Npad
+
+def lobe_figures(w):
+    """Main-lobe half width (first zero) and highest side lobe, in dB, of window w."""
+    mag = np.abs(np.fft.fft(w, Npad)[: Npad // 2])
+    mag_db = db(mag / mag[0])
+    first_min = np.argmax(np.diff(mag) > 0)                 # first local minimum
+    return omega[first_min], mag_db[first_min:].max(), mag_db
+
+fig, ax = plt.subplots()
+results = {}
+for name in ["boxcar", "hann"]:
+    w = signal.get_window(name, L)
+    half_width, sidelobe, mag_db = lobe_figures(w)
+    results[name] = (half_width, sidelobe)
+    ax.plot(omega, mag_db, label=f"{name}: side lobe {sidelobe:.1f} dB")
+ax.set_xlim(0, 0.5); ax.set_ylim(-100, 3)
+ax.set_xlabel(r"$\omega$"); ax.set_ylabel("dB")
+ax.legend()
+plt.show()
+
+for name, (hw, sl) in results.items():
+    print(f"{name:7s}: first zero at {hw * L / np.pi:.2f}·π/L, highest side lobe {sl:.1f} dB")
+assert abs(results["boxcar"][1] + 13.3) < 0.3 and abs(results["hann"][1] + 31.5) < 0.3
+```
+
+The effect on a real measurement: a strong tone and a weak one, 60 dB (a factor
+1000) apart, with frequencies that do not fall on bins.
+
+```{python}
+#| label: fig-leakage
+#| fig-cap: "Spectrum of a strong tone at $\\omega = 0.2\\pi$ plus a tone 60 dB weaker at $0.6\\pi$, from 256 samples. With the rectangular window (top) leakage from the strong tone buries the weak one; with the Hann window (bottom) it stands out clearly."
+L = 256
+n = np.arange(L)
+x = np.cos(0.2 * np.pi * n + 0.123) + 1e-3 * np.cos(0.6 * np.pi * n + 0.456)
+Npad = 4096
+omega = 2 * np.pi * np.arange(Npad // 2) / Npad
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True)
+for ax, name in zip(axes, ["boxcar", "hann"]):
+    w = signal.get_window(name, L)
+    spectrum = db(np.fft.fft(x * w, Npad)[: Npad // 2] / w.sum())
+    ax.plot(omega / np.pi, spectrum, lw=0.8)
+    ax.set_ylim(-120, 5)
+    ax.set_title(name, fontsize=10)
+    ax.set_ylabel("dB")
+axes[1].set_xlabel(r"$\omega / \pi$")
+plt.tight_layout()
+plt.show()
+```
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: find the weak tone
+
+A tone 60 dB weaker than another hides in its leakage. Change the `window`
+(`"boxcar"`, `"hann"`, `"blackman"`), the level of the weak tone `weak_db` and
+its frequency `w2`. How close to the strong tone can the weak one be and still be
+seen with each window?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+window, weak_db, w2 = "hann", -60, 0.6 * np.pi
+L, Npad = 256, 4096
+n = np.arange(L)
+x = np.cos(0.2 * np.pi * n + 0.123) + 10 ** (weak_db / 20) * np.cos(w2 * n + 0.456)
+w = signal.get_window(window, L)
+X = np.fft.fft(x * w, Npad)[: Npad // 2] / w.sum()
+plt.plot(np.linspace(0, 1, Npad // 2), 20 * np.log10(np.abs(X) + 1e-12))
+plt.axvline(w2 / np.pi, color="C3", ls="--", lw=0.8)
+plt.ylim(-140, 5); plt.xlabel("omega / pi"); plt.title(window)
+plt.show()
+```
+:::
+::::
+
+The rule of thumb: use the rectangular window only when frequencies fall on
+bins or when resolving two equally strong, very close tones matters most; use
+Hann (or a relative such as Hamming or Blackman) for everything else.
+
+## Time–frequency analysis: the spectrogram
+
+A single DFT of a whole recording says which frequencies occur, but not when.
+The **short-time Fourier transform** (STFT) cuts the signal into short
+overlapping segments, multiplies each by a window, and computes one DFT per
+segment. The squared magnitudes, arranged as an image with time horizontally
+and frequency vertically, form the **spectrogram**.
+
+Telephone keypads use exactly the information a spectrogram shows. Each key
+sends the sum of two tones (**DTMF**, dual-tone multi-frequency): one of four
+"row" frequencies and one of three "column" frequencies. We synthesise the
+dialling of a number and decode it.
+
+```{python}
+rows = [697, 770, 852, 941]
+cols = [1209, 1336, 1477]
+keys = ["123", "456", "789", "*0#"]
+fs = 8000
+
+def dial(number, tone=0.10, gap=0.05):
+    pieces = []
+    for key in number:
+        r = next(i for i, row in enumerate(keys) if key in row)
+        c = keys[r].index(key)
+        t = np.arange(int(tone * fs)) / fs
+        pieces += [np.cos(2 * np.pi * rows[r] * t) + np.cos(2 * np.pi * cols[c] * t),
+                   np.zeros(int(gap * fs))]
+    return np.concatenate(pieces)
+
+number = "2026*19#"
+x = dial(number) + 0.5 * rng.normal(size=len(dial(number)))
+```
+
+```{python}
+#| label: fig-dtmf-spectrogram
+#| fig-cap: "Spectrogram of the dialled sequence 2026*19# with noise. Each key is a pair of horizontal lines, one in the row band (below 1 kHz) and one in the column band (above 1.2 kHz)."
+f, t, S = signal.spectrogram(x, fs, window="hann", nperseg=256, noverlap=192)
+fig, ax = plt.subplots(figsize=(7, 3.2))
+ax.pcolormesh(t, f, 10 * np.log10(S + 1e-12), shading="auto", cmap="viridis")
+ax.set_ylim(500, 1700)
+ax.set_xlabel("time (s)"); ax.set_ylabel("frequency (Hz)")
+plt.show()
+```
+
+The decoder measures, in each tone segment, the energy at the seven DTMF
+frequencies, an inner product with a complex exponential as in
+@sec-complex-numbers, and picks the strongest row and the strongest column.
+
+```{python}
+def decode(x, tone=0.10, gap=0.05):
+    step, length = int((tone + gap) * fs), int(tone * fs)
+    t = np.arange(length) / fs
+    window = signal.get_window("hann", length)
+    out = ""
+    for start in range(0, len(x) - length + 1, step):
+        seg = x[start:start + length] * window
+        power = lambda f: abs(np.vdot(np.exp(2j * np.pi * f * t), seg))
+        r = int(np.argmax([power(f) for f in rows]))
+        c = int(np.argmax([power(f) for f in cols]))
+        out += keys[r][c]
+    return out
+
+decoded = decode(x)
+print("dialled:", number, " decoded:", decoded)
+assert decoded == number
+```
+
+### Resolution in time or in frequency
+
+The segment length $L$ fixes a trade-off. Bins are $F_s/L$ Hz apart and the main
+lobe of the window is a few bins wide, so frequency resolution improves with
+$L$. But a segment spans $L/F_s$ seconds, and anything that happens within it is
+smeared over that time, so time resolution worsens with $L$. No choice of $L$
+gives both: this is the time–frequency **uncertainty principle** of signal
+analysis (Section 4.8 of @prandoni2008 states it precisely). A chirp, whose
+frequency rises steadily, shows the trade-off well.
+
+```{python}
+#| label: fig-spectrogram-tradeoff
+#| fig-cap: "Spectrograms of a chirp plus two short clicks, with segments of 32 samples (left: sharp in time, blurred in frequency) and 512 samples (right: sharp in frequency, blurred in time)."
+fs = 8000
+t = np.arange(2 * fs) / fs
+x = signal.chirp(t, f0=200, t1=2, f1=3000)
+x[[4000, 4100]] += 20                                       # two clicks 12.5 ms apart
+
+fig, axes = plt.subplots(1, 2, figsize=(7, 3), sharey=True)
+for ax, L in zip(axes, [32, 512]):
+    f, tt, S = signal.spectrogram(x, fs, window="hann", nperseg=L, noverlap=L * 3 // 4)
+    ax.pcolormesh(tt, f, 10 * np.log10(S + 1e-12), shading="auto", cmap="viridis")
+    ax.set_title(f"L = {L}: {fs / L:.0f} Hz bins, {1000 * L / fs:.0f} ms segments", fontsize=9)
+    ax.set_xlabel("time (s)")
+axes[0].set_ylabel("frequency (Hz)")
+plt.tight_layout()
+plt.show()
+```
+
+## Digital frequency and frequency in hertz
+
+Every spectrum in this chapter is plotted against $\omega$ in radians per
+sample, or against bins. When the samples come from a signal sampled at $F_s$,
+the conversion is
+$$
+f = \frac{\omega}{2\pi}F_s \ \text{Hz}, \qquad f_k = \frac{k}{N}F_s \ \text{Hz for bin } k,
+$$
+and the range $\omega \in [-\pi, \pi)$ becomes $[-F_s/2, F_s/2)$. The DTFT is
+periodic in $\omega$; whether a peak at $\omega_0$ came from $\omega_0F_s/(2\pi)$ Hz
+or from one of its aliases cannot be decided from the samples. That is the
+business of Part IV.
+
+## Fourier series of a continuous periodic signal
+
+A continuous-time signal $x(t)$ with period $T$ can also be written as a sum
+of complex exponentials, now with frequencies $k/T$ Hz for every integer $k$.
+
+::: {#def-fourier-series}
+## Fourier series
+
+For an integrable $T$-periodic signal $x(t)$, the **Fourier coefficients** are
+$$
+c_k = \frac1T\int_0^T x(t)\,e^{-j2\pi kt/T}\,dt, \qquad k \in \mathbb{Z},
+$$
+and the **partial sums** of its Fourier series are
+$S_K(t) = \sum_{k=-K}^{K}c_ke^{j2\pi kt/T}$.
+:::
+
+The functions $e^{j2\pi kt/T}$ are orthogonal for the inner product
+$\frac1T\int_0^T x(t)\overline{y(t)}\,dt$ (the integral of
+$e^{j2\pi(k - m)t/T}$ over a period is 0 for $k \ne m$), so $c_k$ is a coordinate,
+exactly as in @thm-orthonormal-expansion, and $S_K$ is the orthogonal
+projection of $x$ onto the span of the first $2K + 1$ exponentials: the best
+approximation in energy (@thm-best-approximation).
+
+The coefficients can be computed numerically from $N$ samples per period,
+replacing the integral by a Riemann sum:
+$c_k \approx \frac1N\sum_{n=0}^{N-1}x(nT/N)e^{-j2\pi kn/N} = X[k]/N$, the DFT of
+the samples divided by $N$. For the square wave equal to $1$ on $[0, T/2)$ and
+$-1$ on $[T/2, T)$, the exact coefficients are $c_k = 2/(j\pi k)$ for odd $k$ and
+$0$ for even $k$ (Exercise 6).
+
+```{python}
+T, N = 1.0, 4096
+tn = np.arange(N) * T / N
+square = np.where(tn < T / 2, 1.0, -1.0)
+square[[0, N // 2]] = 0.0                    # at the jumps, take the midpoint value
+c_numeric = np.fft.fft(square) / N
+for k in [1, 2, 3, 5, 51]:
+    exact = 2 / (1j * np.pi * k) if k % 2 else 0
+    print(f"k = {k:3d}: numeric {c_numeric[k]:.5f}   exact {complex(exact):.5f}")
+```
+
+At the two jumps the samples take the midpoint value 0, the value to which
+the Fourier series converges there. The remaining small differences are the
+aliasing of @sec-dft: samples cannot tell $c_k$
+from $c_{k+N}$, so the DFT returns the sum of all $c_{k + mN}$. With many samples
+per period that error is small for low $k$.
+
+### The Gibbs phenomenon
+
+Where $x$ is smooth, the partial sums converge to it. At a jump they converge to
+the midpoint, but near the jump they **overshoot**, and the overshoot does not
+shrink as $K$ grows: it only gets narrower. For a jump of height $h$, the
+maximum of $S_K$ exceeds the upper value by a quantity that tends to
+$h\left(\frac{1}{\pi}\operatorname{Si}(\pi) - \frac12\right) \approx 0.0895\,h$,
+where $\operatorname{Si}(x) = \int_0^x\frac{\sin u}{u}du$. We state this
+classical result without proof (see, for example, @oppenheim2010) and measure
+it:
+
+```{python}
+#| label: fig-gibbs
+#| fig-cap: "Partial Fourier sums of a square wave with K = 5, 21 and 101 terms. The ripples crowd towards the jump, but the first overshoot keeps its height, about 9 % of the jump."
+t = np.linspace(-0.1, 0.6, 7001)
+
+def partial_sum(t, K):
+    k = np.arange(1, K + 1, 2)                                # odd harmonics only
+    return (4 / np.pi) * np.sin(2 * np.pi * np.outer(t, k)) @ (1 / k)
+
+fig, ax = plt.subplots()
+ax.plot(t, np.where((t % 1) < 0.5, 1.0, -1.0), color="0.7")
+for K in [5, 21, 101]:
+    ax.plot(t, partial_sum(t, K), lw=0.9, label=f"K = {K}")
+ax.set_xlabel("t / T"); ax.legend(loc="lower left")
+plt.show()
+
+limit = 2 * special.sici(np.pi)[0] / np.pi                    # 1 + 0.0895 * (jump of 2)
+for K in [21, 101, 1001]:
+    tt = np.linspace(0, 0.05, 20001)
+    print(f"K = {K:5d}: maximum {partial_sum(tt, K).max():.5f}   (limit {limit:.5f})")
+assert abs(partial_sum(np.linspace(0, 0.005, 20001), 1001).max() - limit) < 1e-3
+```
+
+The square wave has infinitely many harmonics, so no finite sum can represent it
+exactly near the jumps. Sharp edges need high frequencies. The same phenomenon
+appears in filter design (@sec-filter-design), where cutting off a spectrum
+abruptly produces ripples in time.
+
+## A bridge to the Fourier transform
+
+Letting the period $T$ grow without bound, the frequencies $k/T$ come closer
+together and the Fourier series turns into an integral.
+
+::: {#def-fourier-transform}
+## Fourier transform
+
+The **Fourier transform** of an absolutely integrable $x\colon\mathbb{R}\to\mathbb{C}$
+is
+$$
+X(f) = \int_{-\infty}^{\infty} x(t)\,e^{-j2\pi ft}\,dt, \qquad f \in \mathbb{R}\ \text{(in Hz)}.
+$$
+:::
+
+When $X$ is also absolutely integrable, the **inversion formula**
+$x(t) = \int_{-\infty}^{\infty}X(f)\,e^{j2\pi ft}\,df$ holds at every point where
+$x$ is continuous. This is the continuous analogue of @prp-dtft-basics; its
+proof needs more analysis than this book uses, and can be found in any text on
+Fourier analysis. The transform extends to finite-energy signals, with
+Parseval's identity $\int|x(t)|^2dt = \int|X(f)|^2df$.
+
+Two pairs are all that Part IV needs. For the rectangular pulse
+$\operatorname{rect}(t) = 1$ on $[-\frac12, \frac12]$ and $0$ elsewhere,
+$$
+\int_{-1/2}^{1/2}e^{-j2\pi ft}dt = \frac{\sin(\pi f)}{\pi f} = \operatorname{sinc}(f).
+$$
+For the triangle $\Lambda(f) = \max(1 - |f|, 0)$ we compute the inverse
+transform directly:
+
+::: {#prp-sinc-squared}
+## $\operatorname{sinc}^2$ is bandlimited
+
+$\displaystyle\int_{-1}^{1}(1 - |f|)\,e^{j2\pi ft}\,df = \operatorname{sinc}^2(t)$ for every real $t$.
+Consequently the Fourier transform of $\operatorname{sinc}^2(t)$ is $\Lambda(f)$,
+which vanishes for $|f| \ge 1$: $\operatorname{sinc}^2$ contains no frequencies
+above 1 Hz.
+:::
+
+::: {.proof}
+For $t = 0$ both sides are 1. Otherwise the integrand's imaginary part is odd,
+so the integral is $2\int_0^1(1 - f)\cos(2\pi ft)\,df$. Integrating by parts,
+$$
+2\int_0^1(1 - f)\cos(2\pi ft)\,df = 2\left[\frac{(1 - f)\sin(2\pi ft)}{2\pi t}\right]_0^1 + \frac{2}{2\pi t}\int_0^1\sin(2\pi ft)\,df
+= \frac{1 - \cos(2\pi t)}{2\pi^2t^2} = \frac{\sin^2(\pi t)}{\pi^2t^2}.
+$$
+Since $\Lambda$ and $\operatorname{sinc}^2$ are both absolutely integrable and
+continuous, the inversion formula identifies $\Lambda$ as the transform of
+$\operatorname{sinc}^2$.
+:::
+
+This fills the gap left in @sec-what-is-dsp, where we sampled $\operatorname{sinc}^2(t)$
+and rebuilt it perfectly at $F_s = 2.5$ Hz. A numerical check of the transform:
+
+```{python}
+dt = 0.01
+t = np.arange(-2000, 2000, dt)                          # long interval: sinc^2 decays like 1/t^2
+x = np.sinc(t) ** 2
+for f in [0.0, 0.25, 0.5, 0.9, 1.0, 1.5]:
+    X = np.sum(x * np.exp(-2j * np.pi * f * t)) * dt
+    print(f"f = {f:4.2f}: numeric {X.real:8.5f}   triangle {max(1 - abs(f), 0):8.5f}")
+```
+
+Finally, the warning of @sec-what-is-dsp: a nonzero signal that lasts a finite
+time is never bandlimited. If $x$ vanishes outside $[-a, a]$, its transform
+$X(f) = \int_{-a}^{a}x(t)e^{-j2\pi ft}dt$ can be expanded in a power series in $f$
+that converges for every complex $f$ (expand the exponential and integrate term
+by term). A function given by such a series that vanishes on a whole interval
+vanishes everywhere, by a standard theorem of complex analysis. So $X$ cannot be
+zero for all $|f| > f_{\max}$ unless $x = 0$. Real signals are therefore only
+approximately bandlimited, and anti-aliasing filters are always needed.
+
+## Summary
+
+- The DTFT $X(e^{j\omega}) = \sum_nx[n]e^{-j\omega n}$ of an absolutely summable
+  signal is continuous and $2\pi$-periodic, and the inversion integral recovers
+  $x$ (@prp-dtft-basics).
+- The DFT of a finite signal, zero-padded to $N$ points, samples its DTFT at
+  $2\pi k/N$ (@prp-dft-samples-dtft). Zero padding refines the picture, not the
+  information.
+- Observing a signal through a window convolves its spectrum with the window's
+  transform (@prp-dtft-modulation): the main lobe limits resolution, the side
+  lobes cause leakage. Hann's side lobes are at $-31.5$ dB against $-13.3$ dB
+  for the rectangular window, with a main lobe twice as wide.
+- The spectrogram shows how the spectrum changes over time, with a trade-off
+  between time and frequency resolution set by the segment length.
+- Fourier coefficients of a periodic signal can be computed with the DFT of its
+  samples. Partial sums overshoot near jumps by about 9 % of the jump, however
+  many terms are used.
+- The Fourier transform describes continuous-time signals.
+  $\operatorname{sinc}^2$ is bandlimited (@prp-sinc-squared); time-limited
+  signals never are.
+
+## Exercises
+
+1. **DTFT of a shifted signal.** Show that the DTFT of $x[n - m]$ is
+   $e^{-j\omega m}X(e^{j\omega})$, and that the DTFT of $x[-n]$ is $X(e^{-j\omega})$.
+   Use them to compute the DTFT of the symmetric pulse that is 1 for
+   $|n| \le M$ and check that it is real.
+2. **Parseval for the DTFT.** Prove Parseval for finite-support signals and
+   check it numerically for the rectangular pulse, computing the integral with
+   a fine Riemann sum.
+3. **Resolving two tones.** Two equal-amplitude tones at $\omega_1 = 0.30\pi$
+   and $\omega_2 = 0.30\pi + \Delta$ are observed for $L = 128$ samples. Find
+   experimentally the smallest $\Delta$ for which the rectangular and the Hann
+   windows show two separate peaks, and compare with the main-lobe widths.
+4. **Window gain.** Explain the division by `w.sum()` in @fig-leakage. What
+   is the peak height, in dB, of a unit-amplitude sinusoid with each window?
+5. **Your own phone.** Modify the decoder so that it does not need to know the
+   tone and gap lengths: detect the segments from the energy of the signal, then
+   decode each one. Test it with random durations and a noise level that makes
+   it fail occasionally.
+6. **Square-wave coefficients.** Compute the Fourier coefficients of the square
+   wave by hand and show that $S_K(t) = \frac4\pi\sum_{k\text{ odd}\le K}\frac{\sin(2\pi kt/T)}{k}$.
+   Then compute the coefficients of the triangle wave (the integral of the
+   square wave) and explain why its partial sums show no Gibbs phenomenon.
+7. **From series to transform.** For a pulse of width 1 repeated with period
+   $T$, compute $Tc_k$ and plot it against $k/T$ for $T = 2, 8, 32$. Show that the
+   points lie on $\operatorname{sinc}(f)$.
+8. **The aliasing of Fourier coefficients.** Prove that the DFT of $N$ samples
+   per period of a $T$-periodic signal with absolutely summable coefficients is
+   $X[k] = N\sum_{m\in\mathbb{Z}}c_{k + mN}$. Use it to explain the numbers printed
+   for the square wave.

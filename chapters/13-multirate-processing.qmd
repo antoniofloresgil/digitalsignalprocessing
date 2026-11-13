@@ -1,16 +1,398 @@
 # Multirate Processing {#sec-multirate}
 
-Changing the sampling rate without going back to the analog world.
+So far every system in this book has worked at a single sampling rate. Real
+systems change rates all the time: a phone records at 48 kHz and sends speech
+at 8 kHz; a music player converts 44.1 kHz files for a 48 kHz output; an audio
+converter samples at several megahertz internally and delivers 48 kHz. This
+chapter studies the two elementary rate changes of @sec-discrete-time-signals,
+down-sampling and up-sampling, in the frequency domain, combines them into
+rational rate changes, shows how to implement them efficiently, and ends with
+**oversampling**, the trick that lets cheap converters reach high resolution.
+It follows Chapter 11 of @prandoni2008.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+By the end of the chapter you should be able to:
+
+- compute the spectrum of a down-sampled and an up-sampled signal, and explain
+  the aliasing and the images they create;
+- design decimators and interpolators, and change the rate by a rational
+  factor such as 48/44.1;
+- use the noble identities and polyphase filters to cut the cost of rate
+  changes;
+- explain how oversampling and noise shaping trade speed for resolution in A/D
+  conversion.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+from timeit import timeit
+
+rng = np.random.default_rng(13)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## Down-sampling in the frequency domain
+
+Recall that $(\mathcal{D}_Mx)[n] = x[Mn]$ (@def-down-up-sampling).
+
+::: {#thm-downsampling-spectrum}
+## Spectrum of a down-sampled signal
+
+If $x$ is absolutely summable and $y = \mathcal{D}_Mx$, then
+$$
+Y(e^{j\omega}) = \frac1M\sum_{k=0}^{M-1}X\!\left(e^{j\frac{\omega - 2\pi k}{M}}\right).
+$$
 :::
 
-## Planned contents
+::: {.proof}
+By @prp-sum-of-roots, $\frac1M\sum_{k=0}^{M-1}e^{j2\pi km/M}$ is 1 if $M$ divides $m$
+and 0 otherwise. Hence
+$$
+Y(e^{j\omega}) = \sum_nx[Mn]e^{-j\omega n} = \sum_mx[m]\,e^{-j\frac{\omega}{M}m}\,\frac1M\sum_{k=0}^{M-1}e^{j\frac{2\pi k}{M}m}
+= \frac1M\sum_{k=0}^{M-1}\sum_mx[m]e^{-j\frac{\omega - 2\pi k}{M}m},
+$$
+where the first equality keeps only the $m$ that are multiples of $M$, and the
+exchange of sums is allowed because the inner sum over $k$ is finite.
+:::
 
-- Downsampling and aliasing
-- Upsampling and interpolation filters
-- Rational rate changes: 44.1 kHz to 48 kHz
-- Oversampling in A/D and D/A conversion
+The spectrum is **stretched** by a factor $M$, scaled by $1/M$, and $M - 1$
+shifted copies are added. If $X$ is zero outside $|\omega| < \pi/M$, the stretched
+copies do not overlap and nothing is lost. Otherwise they overlap: this is the
+aliasing of @sec-sampling, since down-sampling is sampling again at a lower
+rate. To down-sample a general signal, first remove everything above $\pi/M$
+with a low-pass filter; the combination is a **decimator**.
+
+```{python}
+#| label: fig-decimation
+#| fig-cap: "Down-sampling by 3 a signal whose spectrum extends to $0.6\\pi$. Without a filter (middle) the stretched spectrum folds over and aliases; with a low-pass filter at $\\pi/3$ first (bottom) the result is clean, but the band above $\\pi/3$ is lost."
+N, M = 1 << 14, 3
+n = np.arange(N)
+x = signal.lfilter(signal.firwin(201, 0.6), [1], rng.normal(size=N))     # spectrum up to 0.6π
+x += 3 * np.cos(0.1 * np.pi * n) + 3 * np.cos(0.45 * np.pi * n)           # two marker tones
+
+def show_spectrum(ax, v, title):
+    f, P = signal.welch(v, fs=2, nperseg=1024)
+    ax.semilogy(f, P, lw=0.8); ax.set_title(title, fontsize=10); ax.set_ylim(1e-6, 1e3)
+
+h_aa = signal.firwin(301, 1 / M)
+fig, axes = plt.subplots(3, 1, figsize=(7, 5.5), sharex=True)
+show_spectrum(axes[0], x, "original")
+show_spectrum(axes[1], x[::M], "down-sampled by 3, no filter")
+show_spectrum(axes[2], signal.lfilter(h_aa, [1], x)[::M], "low-pass at π/3, then down-sampled")
+axes[2].set_xlabel(r"$\omega/\pi$")
+plt.tight_layout()
+plt.show()
+```
+
+The tone at $0.45\pi$ becomes $3 \cdot 0.45\pi = 1.35\pi$, which is the same as
+$0.65\pi$: without the filter it appears where nothing was before. With the
+filter it is removed, as it should be, since it cannot be represented at the
+lower rate.
+
+## Up-sampling and interpolation
+
+::: {#thm-upsampling-spectrum}
+## Spectrum of an up-sampled signal
+
+If $y = \mathcal{U}_Lx$, then $Y(e^{j\omega}) = X(e^{j\omega L})$.
+:::
+
+::: {.proof}
+Only the samples at multiples of $L$ are nonzero:
+$Y(e^{j\omega}) = \sum_nx[n]e^{-j\omega Ln}$.
+:::
+
+The spectrum is **compressed** by $L$: the band $[-\pi, \pi]$ of $x$ now occupies
+$[-\pi/L, \pi/L]$, and since $X(e^{j\omega L})$ has period $2\pi/L$, $L - 1$
+**images** appear in the rest of $[-\pi, \pi]$. The zeros inserted by up-sampling
+are what creates them. An ideal low-pass filter with cut-off $\pi/L$ and gain $L$
+removes the images; its output is the signal with the zeros replaced by the
+values that sinc interpolation (@sec-sampling) would give at those points. The
+combination is an **interpolator**, and the gain $L$ compensates for the
+$L - 1$ zeros in every $L$ samples.
+
+```{python}
+#| label: fig-interpolation
+#| fig-cap: "Up-sampling by 4: the inserted zeros (top, dots) create images in the spectrum (middle). Filtering with a low-pass filter at $\\pi/4$ and gain 4 removes them and fills in the missing samples (top, line; bottom)."
+L = 4
+x = np.cos(0.2 * np.pi * np.arange(400)) + 0.5 * np.sin(0.55 * np.pi * np.arange(400))
+up = np.zeros(L * len(x)); up[::L] = x
+h_int = L * signal.firwin(161, 1 / L)
+interp = signal.lfilter(h_int, [1], up)
+delay = 80
+
+fig, axes = plt.subplots(3, 1, figsize=(7, 6))
+k = np.arange(200, 280)
+axes[0].plot(k, up[k], ".", ms=4); axes[0].plot(k, interp[k + delay], lw=0.8)
+for ax, v, title in [(axes[1], up, "up-sampled (zeros inserted)"), (axes[2], interp, "after the interpolation filter")]:
+    f, P = signal.welch(v, fs=2, nperseg=512)
+    ax.semilogy(f, P, lw=0.8); ax.set_title(title, fontsize=10); ax.set_ylim(1e-8, 10)
+axes[2].set_xlabel(r"$\omega/\pi$")
+plt.tight_layout()
+plt.show()
+
+exact = np.cos(0.2 * np.pi * np.arange(1600) / L) + 0.5 * np.sin(0.55 * np.pi * np.arange(1600) / L)
+err = np.abs(interp[delay:delay + 1400][200:] - exact[:1400][200:]).max()
+print(f"max interpolation error (after the start-up): {err:.1e}")
+assert err < 1e-2
+```
+
+## Rational rate changes
+
+To change the rate by $L/M$, up-sample by $L$, filter, and down-sample by $M$.
+The interpolation filter (cut-off $\pi/L$) and the anti-aliasing filter
+(cut-off $\pi/M$) act at the same rate, so one low-pass filter with cut-off
+$\min(\pi/L, \pi/M)$ and gain $L$ does both jobs.
+
+The classic example converts CD audio, 44.1 kHz, to the 48 kHz of video and
+most audio interfaces. Since $48000/44100 = 160/147$ in lowest terms, $L = 160$
+and $M = 147$: the intermediate rate is 7.056 MHz. `scipy.signal.resample_poly`
+implements exactly this, efficiently, as the next section explains. We convert
+a test tone and compare with the tone computed directly at the new rate.
+
+```{python}
+from math import gcd
+f_in, f_out = 44_100, 48_000
+g = gcd(f_in, f_out)
+L, M = f_out // g, f_in // g
+print(f"L = {L}, M = {M}")
+
+t_in = np.arange(f_in) / f_in                                  # one second
+tone = np.sin(2 * np.pi * 1000 * t_in) + 0.3 * np.sin(2 * np.pi * 15_000 * t_in)
+converted = signal.resample_poly(tone, L, M)
+t_out = np.arange(len(converted)) / f_out
+exact = np.sin(2 * np.pi * 1000 * t_out) + 0.3 * np.sin(2 * np.pi * 15_000 * t_out)
+
+middle = slice(1000, -1000)                                      # away from the edges
+snr = 10 * np.log10(np.mean(exact[middle] ** 2) / np.mean((converted - exact)[middle] ** 2))
+print(f"{len(tone)} samples in, {len(converted)} samples out; SNR of the conversion {snr:.1f} dB")
+assert len(converted) == f_out and snr > 60
+```
+
+## Efficient implementation: noble identities and polyphase filters
+
+Computed naively, the decimator filters at the high rate and then throws away
+$M - 1$ of every $M$ outputs: most of the work is wasted. Two identities let us
+move filters across rate changers and avoid that waste.
+
+::: {#prp-noble}
+## Noble identities
+
+Let $G(z)$ be the transfer function of an LTI filter, so that $G(z^M)$ is the
+same filter with its impulse response up-sampled by $M$. Then:
+
+1. filtering with $G(z^M)$ and then down-sampling by $M$ equals down-sampling
+   by $M$ and then filtering with $G(z)$;
+2. up-sampling by $L$ and then filtering with $G(z^L)$ equals filtering with
+   $G(z)$ and then up-sampling by $L$.
+:::
+
+::: {.proof}
+(1) The impulse response of $G(z^M)$ is $g_M[k] = g[k/M]$ when $M$ divides $k$, else
+0. Then $\big(\mathcal{D}_M(g_M * x)\big)[n] = \sum_kg_M[k]x[Mn - k] = \sum_ig[i]x[M(n - i)] = \big(g * \mathcal{D}_Mx\big)[n]$.
+(2) $\big(g_L * \mathcal{U}_Lx\big)[n] = \sum_ig[i](\mathcal{U}_Lx)[n - Li]$, which is
+$\sum_ig[i]x[n/L - i] = (g * x)[n/L]$ when $L$ divides $n$, and 0 otherwise, since
+$n - Li$ is then never a multiple of $L$.
+:::
+
+Now split any filter $h$ into its $M$ **polyphase components**,
+$e_r[i] = h[Mi + r]$ for $r = 0, \dots, M-1$. Grouping the terms of $H(z)$ by the
+remainder of their index modulo $M$ gives
+$$
+H(z) = \sum_{r=0}^{M-1}z^{-r}E_r(z^M).
+$$
+In a decimator, each branch $z^{-r}E_r(z^M)$ followed by $\mathcal{D}_M$ becomes,
+by the first noble identity, $\mathcal{D}_M$ followed by $E_r(z)$: every filter
+now runs at the *low* rate, on one input sample in $M$. The total number of
+multiplications per output sample stays the same, but none of them is wasted,
+so the cost drops by a factor $M$.
+
+```{python}
+def decimate_naive(x, h, M):
+    return signal.lfilter(h, [1], x)[::M]
+
+def decimate_polyphase(x, h, M):
+    """Polyphase decimator: branch r filters x[Mn - r] with e_r[i] = h[Mi + r]."""
+    h = np.r_[h, np.zeros((-len(h)) % M)]
+    n_out = (len(x) + M - 1) // M
+    y = np.zeros(n_out)
+    for r in range(M):
+        xr = (x[0::M] if r == 0 else np.r_[0.0, x[M - r::M]])[:n_out]   # x[Mn - r], n >= 0
+        xr = np.r_[xr, np.zeros(n_out - len(xr))]
+        y += signal.lfilter(h[r::M], [1], xr)
+    return y
+
+M = 16
+h = signal.firwin(1023, 1 / M)
+x = rng.normal(size=1 << 18)
+assert np.allclose(decimate_naive(x, h, M), decimate_polyphase(x, h, M))
+t_naive = timeit(lambda: decimate_naive(x, h, M), number=3) / 3
+t_poly = timeit(lambda: decimate_polyphase(x, h, M), number=3) / 3
+print(f"naive {1000 * t_naive:.1f} ms, polyphase {1000 * t_poly:.1f} ms "
+      f"({t_naive / t_poly:.1f} times faster; the operation count drops by {M})")
+```
+
+Interpolators use the second identity in the same way, and rational
+converters combine both: `resample_poly` never computes the 7 MHz intermediate
+signal of the 44.1 to 48 kHz conversion.
+
+## Oversampling
+
+Rate changes also explain how modern converters work. Two ideas combine.
+
+### Oversampled A/D conversion
+
+Suppose a signal of bandwidth $B$ is sampled at $R$ times the minimum rate,
+$F_s = 2BR$, and quantized with step $\Delta$. Under the additive-noise model
+(@def-quantization-noise-model), the quantization noise is white with power
+$\Delta^2/12$, spread evenly over $[-\pi, \pi]$. The signal, however, occupies
+only $|\omega| < \pi/R$. A low-pass filter with that cut-off, followed by
+down-sampling by $R$, keeps the whole signal and only a fraction $1/R$ of the
+noise power (@thm-filtered-process). The SNR improves by $10\log_{10}R$ dB: 3 dB
+for every doubling of the rate, half a bit.
+
+### Noise shaping
+
+Half a bit per doubling is expensive. A **sigma-delta modulator** does much
+better by shaping the noise. The first-order modulator computes
+$$
+v[n] = v[n-1] + x[n] - y[n-1], \qquad y[n] = Q(v[n]),
+$$
+with a quantizer that may have as little as one bit, $Q(v) = \pm1$. Writing the
+quantizer as $y[n] = v[n] + e[n]$ and eliminating $v$ gives (Exercise 6)
+$$
+y[n] = x[n] + e[n] - e[n-1],
+$$
+so the signal passes unchanged and the quantization error is filtered by
+$1 - z^{-1}$, a high-pass filter with $|H(e^{j\omega})|^2 = 4\sin^2(\omega/2)$. The
+noise is pushed out of the band near $\omega = 0$, where the oversampled signal
+lives. Under the noise model, the in-band noise power is
+$\frac{\sigma_e^2}{2\pi}\int_{-\pi/R}^{\pi/R}4\sin^2(\omega/2)\,d\omega \approx \sigma_e^2\frac{\pi^2}{3R^3}$, so
+every doubling of $R$ gains about 9 dB. We measure both effects, a dithered
+8-bit quantizer and a 1-bit sigma-delta modulator, by computing the error
+power that falls inside the signal band:
+
+```{python}
+#| label: fig-oversampling
+#| fig-cap: "In-band SNR versus oversampling ratio R for a dithered 8-bit quantizer (about 3 dB per doubling) and a first-order sigma-delta modulator with a 1-bit quantizer (about 9 dB per doubling). Noise shaping lets a 1-bit converter overtake the 8-bit one at high R."
+def inband_snr(x, y, R):
+    E = np.fft.rfft(y - x)
+    cut = len(E) // R
+    noise = 2 * np.sum(np.abs(E[1:cut]) ** 2) / len(x) ** 2
+    return 10 * np.log10(np.mean(x ** 2) / noise)
+
+def sigma_delta(x):
+    v, y_prev = 0.0, 0.0
+    y = np.empty_like(x)
+    for i, xi in enumerate(x):
+        v += xi - y_prev
+        y_prev = 1.0 if v >= 0 else -1.0
+        y[i] = y_prev
+    return y
+
+N = 1 << 18
+n = np.arange(N)
+ratios = [4, 8, 16, 32, 64, 128, 256]
+Delta = 2 / 2 ** 8
+snr_plain, snr_sd = [], []
+for R in ratios:
+    x = 0.5 * np.sin(2 * np.pi * 0.087 / R * n)                    # a tone inside the band π/R
+    d = rng.uniform(-Delta / 2, Delta / 2, N) + rng.uniform(-Delta / 2, Delta / 2, N)
+    q = -1 + (np.clip(np.floor((x + d + 1) / Delta), 0, 255) + 0.5) * Delta
+    snr_plain.append(inband_snr(x, q, R))
+    snr_sd.append(inband_snr(x, sigma_delta(x), R))
+
+fig, ax = plt.subplots()
+ax.semilogx(ratios, snr_plain, "o-", base=2, label="8-bit quantizer + dither")
+ax.semilogx(ratios, snr_sd, "s-", base=2, label="1-bit sigma-delta")
+ax.set_xlabel("oversampling ratio R"); ax.set_ylabel("in-band SNR (dB)"); ax.legend()
+plt.show()
+
+slope_plain = np.polyfit(np.log2(ratios), snr_plain, 1)[0]
+slope_sd = np.polyfit(np.log2(ratios), snr_sd, 1)[0]
+print(f"gain per doubling: plain {slope_plain:.2f} dB, sigma-delta {slope_sd:.2f} dB")
+assert abs(slope_plain - 3.01) < 0.3 and 7.5 < slope_sd < 10
+```
+
+The measured slopes match the predictions; the sigma-delta slope is slightly
+below 9 dB because a 1-bit quantizer is far from the conditions of the noise
+model. Higher-order modulators filter the error by $(1 - z^{-1})^k$ and gain
+about $6k + 3$ dB per doubling. With $k = 4$ or 5 and $R = 64$, a 1-bit quantizer
+followed by a decimation filter delivers over 100 dB of SNR. That is how almost
+every audio ADC is built: fast, simple analog hardware, and the precision moved
+into digital filters.
+
+### Oversampled D/A conversion
+
+The same idea works in reverse. Interpolating the signal to $R$ times its rate
+before the DAC moves the images of @prp-zoh-spectrum to multiples of $RF_s$, far
+from the signal band, where a cheap analog filter removes them, and the band of
+interest occupies only the flat start of the $\operatorname{sinc}$ envelope, so
+the droop becomes negligible. Combined with a sigma-delta modulator, the DAC
+itself can again be a 1-bit device.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: aliasing by careless decimation
+
+Down-sample a chirp, whose frequency sweeps from 0 to $\pi$, by `M`, with and
+without the anti-aliasing filter. Where does the aliased part of the sweep
+appear in the spectrogram?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+M, use_filter = 3, False
+n = np.arange(1 << 15)
+x = np.cos(np.pi * n ** 2 / (2 * len(n)))           # frequency rises from 0 to pi
+if use_filter:
+    x = signal.lfilter(signal.firwin(301, 1 / M), [1], x)
+y = x[::M]
+f, t, S = signal.spectrogram(y, fs=2, nperseg=256)
+plt.pcolormesh(t, f, 10 * np.log10(S + 1e-12), shading="auto")
+plt.ylabel("omega / pi (at the new rate)"); plt.show()
+```
+:::
+::::
+
+## Summary
+
+- Down-sampling by $M$ stretches the spectrum and adds $M - 1$ shifted copies
+  (@thm-downsampling-spectrum). A low-pass filter at $\pi/M$ first prevents
+  aliasing: that is a decimator.
+- Up-sampling by $L$ compresses the spectrum and creates $L - 1$ images
+  (@thm-upsampling-spectrum). A low-pass filter at $\pi/L$ with gain $L$ removes
+  them: that is an interpolator.
+- A rate change by $L/M$ is up-sampling, one low-pass filter and down-sampling;
+  44.1 kHz to 48 kHz is $160/147$.
+- The noble identities (@prp-noble) and polyphase decomposition run all filters
+  at the low rate, dividing the cost by the rate-change factor.
+- Oversampling by $R$ gains $10\log_{10}R$ dB of quantization SNR; first-order
+  noise shaping gains about 9 dB per doubling, which lets 1-bit converters reach
+  high resolution.
+
+## Exercises
+
+1. **Down-sampling a sinusoid.** Use @thm-downsampling-spectrum to predict the
+   frequency of $\cos(\omega_0n)$ after down-sampling by $M$, for every
+   $\omega_0 \in [0, \pi]$, and plot the result. Compare with the wagon-wheel curve of
+   @fig-wagon-wheel.
+2. **Up then down.** Show with the two theorems that up-sampling by $L$ followed
+   by down-sampling by $L$ leaves the spectrum unchanged, in agreement with
+   @prp-down-up-inverse. What happens in the other order?
+3. **Interpolation filter specification.** For an interpolator by 4 that must
+   keep frequencies up to $0.8\pi$ of the original signal with 0.1 dB ripple and
+   suppress images by 60 dB, write the specification of the low-pass filter and
+   design it with `remez`. How many taps does it need?
+4. **Polyphase interpolator.** Write `interpolate_polyphase(x, h, L)` using the
+   second noble identity and check it against up-sampling followed by filtering.
+5. **Multistage decimation.** Decimating by 64 in one stage requires a very
+   sharp filter. Compare the total number of multiplications per output sample
+   of one stage by 64 with three stages by 4, for the same overall
+   specification.
+6. **The sigma-delta equation.** Derive $y[n] = x[n] + e[n] - e[n-1]$ from the
+   modulator equations, and compute the in-band noise integral exactly. Then
+   implement a second-order modulator, whose error is filtered by
+   $(1 - z^{-1})^2$, and measure its gain per doubling of $R$.

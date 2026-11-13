@@ -1,19 +1,539 @@
 # The DFT and the FFT {#sec-dft}
 
-The Discrete Fourier Transform rewrites a finite signal as a sum of sinusoids. It is a change of basis, and the FFT is a fast way to compute it.
+@sec-complex-numbers ended with a note detector that measured how much of one
+frequency a recording contains, by taking an inner product with a complex
+exponential. The **discrete Fourier transform** (DFT) does this for $N$
+frequencies at once, chosen so that the complex exponentials form an
+orthogonal basis of $\mathbb{C}^N$. The DFT is then a change of basis, in the
+sense of @sec-signals-as-vectors, from samples to frequencies, and it loses
+nothing: the inverse DFT gets the samples back exactly.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+The second half of the chapter is about computation. A change of basis in
+$\mathbb{C}^N$ costs $N^2$ operations, which is too slow for real signals. The
+**fast Fourier transform** (FFT) computes exactly the same result in about
+$N\log_2 N$ operations. We derive it, implement it, and measure the difference.
+Finally we use it to compute convolutions quickly, which is how long filters
+are applied in practice. The presentation follows Sections 4.2 and 4.7 of
+@prandoni2008.
+
+By the end of the chapter you should be able to:
+
+- prove that the Fourier vectors are orthogonal, and invert the DFT;
+- read a spectrum: bins, frequencies in Hz, magnitude, phase, negative
+  frequencies;
+- state and verify the main DFT properties: shifts, symmetry of real signals,
+  Parseval, and the circular convolution theorem;
+- derive the radix-2 FFT and explain why it costs $O(N\log N)$;
+- compute linear convolutions with the FFT, and know when circular and linear
+  convolution agree.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+from timeit import timeit
+
+rng = np.random.default_rng(5)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## The Fourier basis
+
+::: {#def-fourier-vectors}
+## Fourier vectors
+
+For $N \ge 1$ and $k = 0, \dots, N-1$, the $k$-th **Fourier vector** of length
+$N$ is $\mathbf{w}_k \in \mathbb{C}^N$ with components
+$$
+w_k[n] = e^{j\frac{2\pi}{N}kn}, \qquad n = 0, \dots, N-1 .
+$$
 :::
 
-## Planned contents
+$\mathbf{w}_k$ is a complex exponential with frequency $\omega_k = 2\pi k/N$: it
+completes exactly $k$ turns of the unit circle in $N$ samples. These are the
+only complex exponentials whose period divides $N$, so they are the natural
+oscillations for a signal of length $N$ that is thought of as one period of its
+periodic extension (@sec-signal-classes).
 
-- The Fourier basis and its orthogonality, checked numerically
-- The DFT as a matrix; the inverse DFT
-- Reading a spectrum: magnitude, phase and frequency bins
-- Properties that matter in practice: linearity, shifts, symmetry of real signals, Parseval
-- Why the FFT is fast; `numpy.fft` in practice
-- Cost of the DFT vs. the FFT, measured: O(N²) against O(N log N)
-- Circular vs. linear convolution, and fast convolution with the FFT
+::: {#thm-fourier-orthogonality}
+## The Fourier vectors are an orthogonal basis
+
+$\langle\mathbf{w}_k, \mathbf{w}_m\rangle = N$ if $k = m$ and $0$ otherwise, for
+$0 \le k, m \le N-1$. Hence $\{\mathbf{w}_k/\sqrt N\}$ is an orthonormal basis of
+$\mathbb{C}^N$.
+:::
+
+::: {.proof}
+$\langle\mathbf{w}_k,\mathbf{w}_m\rangle = \sum_{n=0}^{N-1} e^{j2\pi kn/N}\,\overline{e^{j2\pi mn/N}} = \sum_{n=0}^{N-1}e^{j2\pi(k-m)n/N}$.
+Since $|k - m| < N$, the integer $k - m$ is divisible by $N$ only when $k = m$,
+and @prp-sum-of-roots gives the two cases. $N$ orthonormal vectors in
+$\mathbb{C}^N$ are a basis (@thm-orthonormal-expansion).
+:::
+
+## The discrete Fourier transform
+
+::: {#def-dft}
+## DFT and inverse DFT
+
+The **DFT** of $\mathbf{x} \in \mathbb{C}^N$ is $\mathbf{X} \in \mathbb{C}^N$ with
+$$
+X[k] = \langle\mathbf{x}, \mathbf{w}_k\rangle = \sum_{n=0}^{N-1} x[n]\, e^{-j\frac{2\pi}{N}kn},
+\qquad k = 0, \dots, N-1 .
+$$
+:::
+
+::: {#thm-dft-inversion}
+## Inversion
+
+Every $\mathbf{x} \in \mathbb{C}^N$ is recovered from its DFT by
+$$
+x[n] = \frac{1}{N}\sum_{k=0}^{N-1} X[k]\, e^{j\frac{2\pi}{N}kn}, \qquad n = 0, \dots, N-1 .
+$$
+:::
+
+::: {.proof}
+Expand $\mathbf{x}$ in the orthonormal basis $\mathbf{e}_k = \mathbf{w}_k/\sqrt N$
+(@thm-orthonormal-expansion): $\mathbf{x} = \sum_k\langle\mathbf{x},\mathbf{e}_k\rangle\mathbf{e}_k = \sum_k \frac{X[k]}{\sqrt N}\frac{\mathbf{w}_k}{\sqrt N}$.
+:::
+
+So $\mathbf{x}$ is a sum of $N$ complex exponentials, the $k$-th with complex
+amplitude (phasor) $X[k]/N$. The DFT is the analysis, the inverse DFT the
+synthesis. The factor $1/N$ could be placed elsewhere; with this convention,
+used by NumPy, SciPy and most of the literature, $X[0] = \sum_n x[n]$ is the sum
+of the samples.
+
+In matrix form, $\mathbf{X} = W\mathbf{x}$ with $W_{kn} = e^{-j2\pi kn/N}$, and
+@thm-fourier-orthogonality says $W W^{\mathsf H} = NI$, so
+$W^{-1} = \frac1N W^{\mathsf H}$. We build the matrix and compare with NumPy:
+
+```{python}
+def dft_matrix(N):
+    k = np.arange(N)
+    return np.exp(-2j * np.pi * np.outer(k, k) / N)
+
+N = 16
+W = dft_matrix(N)
+x = rng.normal(size=N) + 1j * rng.normal(size=N)
+
+assert np.allclose(W @ W.conj().T, N * np.eye(N))                 # orthogonality
+assert np.allclose(W @ x, np.fft.fft(x))                          # same convention as NumPy
+assert np.allclose(W.conj().T @ (W @ x) / N, x)                   # inversion
+assert np.allclose(np.fft.ifft(np.fft.fft(x)), x)
+print("all checks passed for N =", N)
+```
+
+The definition makes sense for every integer $k$, and $X[k + N] = X[k]$ because
+$e^{-j2\pi(k+N)n/N} = e^{-j2\pi kn/N}$. Likewise the inversion formula, evaluated
+for every integer $n$, gives the periodic extension $\tilde x$. The DFT therefore
+treats $\mathbf{x}$ as **one period of a periodic signal**, and its spectrum as
+one period of a periodic sequence. Keep this in mind: every surprising
+property below comes from it.
+
+## Reading a spectrum
+
+Bin $k$ corresponds to digital frequency $\omega_k = 2\pi k/N$. If the signal
+was sampled at $F_s$ Hz, that is $f_k = kF_s/N$ Hz: the bins are spaced
+$F_s/N$ Hz apart, so a longer recording gives finer frequency resolution.
+
+Since $\omega$ and $\omega - 2\pi$ are the same frequency
+(@prp-complex-frequency-equivalence), bins $k > N/2$ are really **negative
+frequencies**: $k = N - 1$ is $\omega = -2\pi/N$. `np.fft.fftfreq(N, d=1/fs)`
+returns the frequency of each bin with this convention, and `np.fft.fftshift`
+reorders the spectrum so that frequency 0 is in the middle.
+
+The cleanest case is a sinusoid that completes a whole number of cycles in the
+window.
+
+::: {#prp-dft-of-cosine}
+## DFT of a sinusoid on a bin
+
+Let $0 < k_0 < N/2$ be an integer and $x[n] = A\cos(2\pi k_0 n/N + \varphi)$,
+$n = 0, \dots, N-1$. Then $X[k_0] = \frac{NA}{2}e^{j\varphi}$,
+$X[N - k_0] = \frac{NA}{2}e^{-j\varphi}$, and $X[k] = 0$ for every other $k$.
+:::
+
+::: {.proof}
+By @eq-cos-two-exponentials,
+$\mathbf{x} = \frac A2 e^{j\varphi}\mathbf{w}_{k_0} + \frac A2 e^{-j\varphi}\mathbf{w}_{-k_0}$,
+and $\mathbf{w}_{-k_0} = \mathbf{w}_{N - k_0}$. Taking the inner product with each
+$\mathbf{w}_k$ and using @thm-fourier-orthogonality gives the result.
+:::
+
+So the magnitude $|X[k_0]|$ gives the amplitude, $A = 2|X[k_0]|/N$, and the
+argument of $X[k_0]$ gives the phase. A practical example: a 0.5 s recording
+at $F_s = 1$ kHz of a 50 Hz mains hum with a weaker third harmonic at 150 Hz,
+plus noise.
+
+```{python}
+#| label: fig-spectrum-reading
+#| fig-cap: "A 50 Hz hum with a 150 Hz harmonic and noise (top), and the magnitude of its DFT plotted against frequency in Hz, with the zero frequency in the centre (bottom). Each sinusoid appears twice, at $\\pm f$, with height $NA/2$."
+fs, N = 1000, 500
+n = np.arange(N)
+x = 1.0 * np.cos(2 * np.pi * 50 * n / fs + 0.4) + 0.3 * np.cos(2 * np.pi * 150 * n / fs - 1.0) \
+    + 0.2 * rng.normal(size=N)
+
+X = np.fft.fft(x)
+f = np.fft.fftfreq(N, d=1 / fs)                       # Hz, negative for the upper bins
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.8))
+axes[0].plot(n / fs, x, lw=0.8)
+axes[0].set_xlabel("time (s)")
+axes[1].plot(np.fft.fftshift(f), np.fft.fftshift(np.abs(X)), lw=0.8)
+axes[1].set_xlabel("frequency (Hz)")
+axes[1].set_ylabel("$|X[k]|$")
+plt.tight_layout()
+plt.show()
+
+k50 = 50 * N // fs                                    # bin of 50 Hz
+print(f"bin spacing {fs / N} Hz; at 50 Hz: amplitude {2 * abs(X[k50]) / N:.3f}, "
+      f"phase {np.angle(X[k50]):.3f} rad (true 1.0 and 0.4)")
+```
+
+The estimates are slightly off because of the noise, which spreads its energy
+over all bins. When the frequency falls *between* bins, the energy of a single
+sinusoid also spreads over many bins; this **leakage**, and what to do about it,
+is the subject of @sec-spectral-analysis.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: on a bin and between bins
+
+Set `f0` to a multiple of $F_s/N = 2$ Hz, then to an odd number of Hz, and
+compare the spectra. How many bins are clearly nonzero in each case?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+fs, N, f0 = 1000, 500, 50
+n = np.arange(N)
+X = np.fft.fft(np.cos(2 * np.pi * f0 * n / fs))
+f = np.fft.fftfreq(N, d=1 / fs)
+plt.stem(f[:N // 2], np.abs(X[:N // 2]), basefmt=" ")
+plt.xlim(0, 4 * f0)
+plt.xlabel("frequency (Hz)")
+plt.title(f"f0 = {f0} Hz, bin spacing {fs / N} Hz")
+plt.show()
+```
+:::
+::::
+
+## Properties
+
+Every property below has a one-line proof from the definition, and every one is
+checked numerically. Throughout, $\mathbf{x}, \mathbf{y} \in \mathbb{C}^N$ have DFTs
+$\mathbf{X}, \mathbf{Y}$, indices are taken modulo $N$, and
+$W_N = e^{-j2\pi/N}$, so that $X[k] = \sum_n x[n]W_N^{kn}$.
+
+::: {#prp-dft-properties}
+## Properties of the DFT
+
+1. **Linearity.** The DFT of $\alpha\mathbf{x} + \beta\mathbf{y}$ is $\alpha\mathbf{X} + \beta\mathbf{Y}$.
+2. **Circular shift.** If $y[n] = x[(n - m) \bmod N]$, then $Y[k] = W_N^{km}X[k]$.
+3. **Modulation.** If $y[n] = e^{j2\pi k_0n/N}x[n]$, then $Y[k] = X[(k - k_0) \bmod N]$.
+4. **Real signals.** If $\mathbf{x}$ is real, then $X[N - k] = \overline{X[k]}$; hence
+   $|X[k]|$ is symmetric and only bins $0, \dots, \lfloor N/2\rfloor$ carry
+   information.
+5. **Parseval.** $\sum_n|x[n]|^2 = \frac1N\sum_k|X[k]|^2$, and
+   $\langle\mathbf{x},\mathbf{y}\rangle = \frac1N\langle\mathbf{X},\mathbf{Y}\rangle$.
+:::
+
+::: {.proof}
+(1) The DFT is a matrix product. (2) Substitute $m' = (n - m) \bmod N$ in the sum;
+as $n$ runs over a period so does $m'$, and $W_N^{kn} = W_N^{k(m' + m)}$ because
+$W_N^N = 1$. (3) $e^{j2\pi k_0n/N}W_N^{kn} = W_N^{(k - k_0)n}$. (4) Conjugating
+$X[k]$ conjugates each $W_N^{kn}$, which gives $W_N^{-kn} = W_N^{(N - k)n}$, while
+$x[n]$ is unchanged. (5) $\mathbf{X} = W\mathbf{x}$ with $W^{\mathsf H}W = NI$, so
+$\langle W\mathbf{x}, W\mathbf{y}\rangle = \mathbf{y}^{\mathsf H}W^{\mathsf H}W\mathbf{x} = N\langle\mathbf{x},\mathbf{y}\rangle$.
+:::
+
+```{python}
+N, m, k0 = 64, 5, 3
+x = rng.normal(size=N)
+y = rng.normal(size=N) + 1j * rng.normal(size=N)
+X, Y = np.fft.fft(x), np.fft.fft(y)
+k = np.arange(N)
+WN = np.exp(-2j * np.pi / N)
+
+assert np.allclose(np.fft.fft(2 * x + 3j * y), 2 * X + 3j * Y)                            # 1
+assert np.allclose(np.fft.fft(np.roll(x, m)), WN ** (k * m) * X)                          # 2
+assert np.allclose(np.fft.fft(np.exp(2j * np.pi * k0 * k / N) * x), np.roll(X, k0))       # 3
+assert np.allclose(X[(N - k) % N], np.conj(X))                                            # 4
+assert np.isclose(np.sum(np.abs(x) ** 2), np.sum(np.abs(X) ** 2) / N)                     # 5
+assert np.isclose(np.vdot(y, x), np.vdot(Y, X) / N)
+print("properties 1-5 verified")
+```
+
+Property 2 says that delaying a signal does not change the magnitude of its
+spectrum, only the phases, and each phase by an amount proportional to the
+frequency. Property 3 is the basis of every radio: multiplying by a complex
+exponential moves the whole spectrum by $k_0$ bins. Property 4 is why
+`np.fft.rfft` exists: for real input it computes only the nonnegative-frequency
+half, which is all the information there is.
+
+### Circular convolution
+
+The last property is the most important one. Define the **circular
+convolution** of $\mathbf{x}, \mathbf{y} \in \mathbb{C}^N$ as
+$$
+(\mathbf{x} \circledast \mathbf{y})[n] = \sum_{m=0}^{N-1} x[m]\, y[(n - m) \bmod N],
+\qquad n = 0, \dots, N-1 .
+$$
+Each output sample is a weighted sum of circularly shifted copies of
+$\mathbf{y}$, with the samples of $\mathbf{x}$ as weights.
+
+::: {#thm-circular-convolution}
+## Circular convolution theorem
+
+The DFT of $\mathbf{x} \circledast \mathbf{y}$ is the product $X[k]\,Y[k]$.
+:::
+
+::: {.proof}
+$\sum_n\sum_m x[m]\,y[(n - m)\bmod N]\,W_N^{kn} = \sum_m x[m]W_N^{km}\sum_n y[(n - m) \bmod N]\,W_N^{k(n - m)}$,
+and by the argument of property 2 the inner sum is $Y[k]$ for every $m$.
+:::
+
+A sum of $N$ products for each of $N$ outputs becomes one product per bin. The
+cost of convolution drops from $N^2$ to the cost of three DFTs, which, with the
+FFT, is $O(N\log N)$.
+
+```{python}
+def circular_convolution(x, y):
+    N = len(x)
+    return np.array([sum(x[m] * y[(n - m) % N] for m in range(N)) for n in range(N)])
+
+x, y = rng.normal(size=32), rng.normal(size=32)
+assert np.allclose(circular_convolution(x, y), np.fft.ifft(np.fft.fft(x) * np.fft.fft(y)).real)
+print("circular convolution theorem verified")
+```
+
+## The fast Fourier transform
+
+Computing the DFT as a matrix product takes $N^2$ complex multiplications. For a
+one-second audio signal at 48 kHz that is over $2\times10^9$, far too many. The
+FFT, published by Cooley and Tukey in 1965 [@cooley1965] (and known to Gauss),
+reduces this to about $\frac N2\log_2 N$, a million times fewer for this example.
+
+The idea is divide and conquer. Let $N$ be even and split $\mathbf{x}$ into its
+even-indexed samples $e[m] = x[2m]$ and odd-indexed samples $o[m] = x[2m + 1]$,
+$m = 0, \dots, N/2 - 1$, with DFTs $E$ and $O$ of length $N/2$.
+
+::: {#prp-fft-butterfly}
+## Radix-2 decimation in time
+
+For $k = 0, \dots, N/2 - 1$,
+$$
+X[k] = E[k] + W_N^k\,O[k], \qquad X[k + N/2] = E[k] - W_N^k\,O[k].
+$$
+:::
+
+::: {.proof}
+Splitting the sum into even and odd $n$,
+$X[k] = \sum_m x[2m]W_N^{2mk} + \sum_m x[2m+1]W_N^{(2m+1)k} = E[k] + W_N^kO[k]$,
+because $W_N^2 = W_{N/2}$. Replacing $k$ by $k + N/2$: $E$ and $O$ have period
+$N/2$, and $W_N^{N/2} = -1$.
+:::
+
+Two half-size DFTs plus $N/2$ multiplications by $W_N^k$ (the "twiddle
+factors") give the full DFT. If $N$ is a power of 2 we can apply the same split
+to $E$ and $O$, and so on down to length 1, where the DFT is the sample itself.
+
+::: {#prp-fft-cost}
+## Cost of the radix-2 FFT
+
+For $N = 2^p$, the recursion uses $\frac N2\log_2 N$ complex multiplications.
+:::
+
+::: {.proof}
+Let $M(N)$ be the count. Then $M(1) = 0$ and $M(N) = 2M(N/2) + N/2$. Induction:
+if $M(N/2) = \frac N4(p - 1)$, then $M(N) = \frac N2(p - 1) + \frac N2 = \frac N2 p$.
+:::
+
+The whole algorithm fits in a few lines:
+
+```{python}
+def fft_radix2(x):
+    """Recursive radix-2 FFT. len(x) must be a power of 2."""
+    N = len(x)
+    if N == 1:
+        return np.asarray(x, dtype=complex)
+    E, O = fft_radix2(x[0::2]), fft_radix2(x[1::2])
+    twiddle = np.exp(-2j * np.pi * np.arange(N // 2) / N) * O
+    return np.concatenate([E + twiddle, E - twiddle])
+
+x = rng.normal(size=1024)
+assert np.allclose(fft_radix2(x), np.fft.fft(x))
+print("radix-2 FFT agrees with numpy.fft for N = 1024")
+```
+
+### Measuring the cost
+
+We time three ways of computing the same DFT: directly from the definition
+(evaluating the $N^2$ exponentials and the matrix product), our recursive
+Python FFT, and `np.fft.fft`, which calls an optimised library written in C. Absolute times depend on the computer
+that builds the book; the slopes in the log–log plot do not.
+
+```{python}
+#| label: fig-fft-timing
+#| fig-cap: "Time to compute one DFT of length N on the computer that built this book. On log-log axes the direct computation has slope 2 (cost $N^2$); both FFTs grow almost linearly ($N \\log N$). np.fft adds a large constant-factor advantage on top."
+sizes = 2 ** np.arange(4, 12)
+t_matrix, t_ours, t_numpy = [], [], []
+for N in sizes:
+    x = rng.normal(size=N)
+    reps = max(3, int(2000 // N))
+    t_matrix.append(timeit(lambda: dft_matrix(N) @ x, number=reps) / reps)
+    t_ours.append(timeit(lambda: fft_radix2(x), number=reps) / reps)
+    t_numpy.append(timeit(lambda: np.fft.fft(x), number=reps) / reps)
+
+fig, ax = plt.subplots()
+ax.loglog(sizes, t_matrix, "o-", label="from the definition")
+ax.loglog(sizes, t_ours, "s-", label="recursive FFT (Python)")
+ax.loglog(sizes, t_numpy, "^-", label="np.fft.fft")
+ax.set_xlabel("$N$"); ax.set_ylabel("seconds per transform")
+ax.legend()
+plt.show()
+
+slope = np.polyfit(np.log(sizes[-4:]), np.log(t_matrix[-4:]), 1)[0]
+print(f"fitted log-log slope of the direct DFT for large N: {slope:.2f}")
+```
+
+The measured slope is close to the theoretical 2; at moderate sizes memory
+caches and vectorised arithmetic make large arrays slightly cheaper per
+element than the operation count predicts. Our Python FFT has a large fixed
+overhead per recursive call, but its curve is
+flatter, and the gap to the direct computation widens as $N$ grows. `np.fft` is fast at every size. For lengths that are not powers of
+two, real libraries use mixed-radix splits ($N = 3\cdot5\cdot\ldots$) and other
+algorithms; any $N$ can be transformed in $O(N\log N)$ operations, although
+lengths with only small prime factors are fastest.
+
+## Linear convolution and fast filtering
+
+Circular convolution wraps around, which is rarely what we want. The ordinary,
+or **linear**, convolution of two finite sequences $x[0..L-1]$ and $h[0..M-1]$ is
+$$
+(x * h)[n] = \sum_{m} x[m]\,h[n - m], \qquad n = 0, \dots, L + M - 2,
+$$
+where terms with indices outside the arrays are zero. It is `np.convolve(x, h)`.
+In @sec-lti it will be the output of a filter with impulse response $h$; here is
+a familiar instance. Multiplying two polynomials convolves their coefficient
+lists: $(1 + 2z)(3 + z + z^2) = 3 + 7z + 3z^2 + 2z^3$, and indeed
+
+```{python}
+print(np.convolve([1, 2], [3, 1, 1]))
+```
+
+::: {#prp-circular-linear}
+## When circular convolution is linear convolution
+
+Let $\mathbf{x}$ and $\mathbf{h}$ have lengths $L$ and $M$, and let
+$N \ge L + M - 1$. Pad both with zeros to length $N$. Then their circular
+convolution equals $x * h$ followed by $N - (L + M - 1)$ zeros.
+:::
+
+::: {.proof}
+In the circular sum, $x[m] \ne 0$ only for $0 \le m \le L-1$, and
+$h[(n - m) \bmod N] \ne 0$ only if $(n - m) \bmod N \le M - 1$. For
+$0 \le n \le N-1$ and $0 \le m \le L-1$ we have $-(L-1) \le n - m \le N - 1$. If
+$n - m < 0$, then $(n - m) \bmod N = n - m + N \ge N - L + 1 \ge M$, so that term
+is zero. Hence only terms with $0 \le n - m$ survive, and there
+$(n - m)\bmod N = n - m$: the sum is the linear one.
+:::
+
+If $N$ is too small, the tail of the linear convolution wraps around and is
+added to its beginning: this is the time-domain aliasing of
+@sec-signal-classes, now caused by the periodicity hidden in the DFT.
+
+```{python}
+#| label: fig-circular-vs-linear
+#| fig-cap: "Linear convolution of two pulses of lengths 20 and 15 (top, length 34), and circular convolutions of length 34 (middle), which matches it, and 24 (bottom), where the last 10 samples wrap around onto the first ones."
+x = np.ones(20)
+h = np.linspace(1, 0, 15)
+linear = np.convolve(x, h)
+
+def fft_circular(x, h, N):
+    return np.fft.ifft(np.fft.fft(x, N) * np.fft.fft(h, N)).real    # fft(x, N) zero-pads to N
+
+fig, axes = plt.subplots(3, 1, figsize=(7, 5.5), sharex=True, sharey=True)
+for ax, (title, y) in zip(axes, [("linear, length 34", linear),
+                                 ("circular, N = 34", fft_circular(x, h, 34)),
+                                 ("circular, N = 24", fft_circular(x, h, 24))]):
+    ax.stem(np.arange(len(y)), y, basefmt=" ", markerfmt=".")
+    ax.set_title(title, fontsize=10)
+plt.tight_layout()
+plt.show()
+
+assert np.allclose(fft_circular(x, h, 34), linear)
+assert np.allclose(fft_circular(x, h, 64)[:34], linear) and np.allclose(fft_circular(x, h, 64)[34:], 0)
+```
+
+### Fast convolution in practice
+
+To convolve long sequences: zero-pad both to a length $N \ge L + M - 1$ that the
+FFT handles well, multiply the FFTs, invert, and keep the first $L + M - 1$
+samples. `scipy.signal.fftconvolve` does exactly this. As an example, we add the
+reverberation of a room to a 2-second signal at 8 kHz by convolving it with a
+1-second impulse response, modelled as noise with an exponentially decaying
+envelope.
+
+```{python}
+fs = 8000
+dry = rng.normal(size=2 * fs)                                          # 2 s of signal
+t = np.arange(fs) / fs
+room = rng.normal(size=fs) * np.exp(-t / 0.15)                         # 1 s of decaying echoes
+
+t_direct = timeit(lambda: np.convolve(dry, room), number=1)
+t_fft = timeit(lambda: signal.fftconvolve(dry, room), number=3) / 3
+assert np.allclose(np.convolve(dry, room), signal.fftconvolve(dry, room))
+print(f"direct convolution: {t_direct * 1000:8.1f} ms")
+print(f"FFT convolution   : {t_fft * 1000:8.1f} ms   ({t_direct / t_fft:.0f} times faster)")
+```
+
+For a filter with a handful of coefficients, direct convolution is cheaper.
+For long ones, such as reverberation, room correction or long correlations, the
+FFT wins by orders of magnitude. For signals that never end, the input is cut
+into blocks that are convolved separately and stitched back together (the
+*overlap-add* method, Exercise 7).
+
+## Summary
+
+- The Fourier vectors $e^{j2\pi kn/N}$, $k = 0, \dots, N-1$, are an orthogonal
+  basis of $\mathbb{C}^N$ (@thm-fourier-orthogonality). The DFT computes the
+  coordinates, the inverse DFT rebuilds the signal (@thm-dft-inversion).
+- Bin $k$ is the frequency $2\pi k/N$ rad/sample, or $kF_s/N$ Hz; bins above
+  $N/2$ are negative frequencies. A sinusoid on a bin gives two spikes of height
+  $NA/2$ (@prp-dft-of-cosine).
+- The DFT treats a signal as periodic. Shifts become phase factors, modulation
+  becomes a shift, real signals have conjugate-symmetric spectra, and energy is
+  preserved up to $N$ (@prp-dft-properties).
+- Circular convolution becomes multiplication (@thm-circular-convolution); with
+  enough zero padding it equals linear convolution (@prp-circular-linear).
+- The radix-2 FFT splits a DFT into two of half the size
+  (@prp-fft-butterfly), at a total cost of $\frac N2\log_2N$ multiplications
+  (@prp-fft-cost).
+
+## Exercises
+
+1. **DFT by hand.** Compute the DFT of $\mathbf{x} = (1, 1, 0, 0)$ and of
+   $\boldsymbol{\delta} = (1, 0, 0, 0)$ by hand. Check with `np.fft.fft`. What is the
+   DFT of the constant vector $(1, \dots, 1)$ of length $N$?
+2. **Amplitude and phase.** Extend the hum example to estimate amplitude and
+   phase of both components with 100 different noise realisations. Plot the
+   histogram of the amplitude estimates. How does their spread change with $N$?
+3. **Time reversal.** Show that if $y[n] = x[(-n) \bmod N]$, then
+   $Y[k] = X[(-k)\bmod N]$, and if $\mathbf{x}$ is real, $Y[k] = \overline{X[k]}$. Verify
+   with NumPy, being careful with the index of the first sample.
+4. **Real and even.** Show that the DFT of a real vector with
+   $x[n] = x[(-n) \bmod N]$ is real. Which DFTs are purely imaginary?
+5. **Two real FFTs for the price of one.** Given real $\mathbf{a}, \mathbf{b}$, let
+   $\mathbf{z} = \mathbf{a} + j\mathbf{b}$. Use property 4 to recover $\mathbf{A}$ and
+   $\mathbf{B}$ from $\mathbf{Z}$ alone. Implement and verify.
+6. **Counting operations.** Instrument `fft_radix2` to count complex
+   multiplications and check @prp-fft-cost for $N = 2, 4, \dots, 4096$.
+7. **Overlap-add.** Cut a long signal into blocks of length $B$, convolve each
+   block with a filter of length $M$ via the FFT with $N \ge B + M - 1$, and add
+   the outputs, each shifted to the position of its block. Prove that the
+   result equals the full linear convolution, and implement it.
+8. **Multiplying large integers.** A decimal number is a polynomial evaluated at
+   10. Multiply two 1000-digit integers by convolving their digit arrays with
+   the FFT, rounding, and propagating carries. Compare with Python's own integer
+   product.

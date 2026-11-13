@@ -1,17 +1,412 @@
 # Random Signals and Noise {#sec-noise}
 
-Noise is everywhere. This chapter gives just enough probability to describe it and to measure its effect.
+Every signal in the real world is accompanied by noise: thermal noise in
+amplifiers, interference on a radio channel, the rounding errors of a
+quantizer. Noise cannot be described sample by sample, because its values are
+unpredictable, but it can be described *statistically*: by its mean, by its
+power, and by how its power is distributed over frequency. This chapter builds
+those descriptions for random signals, shows how filters change them, and uses
+them to remove noise and to measure how well we did.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+The chapter assumes a first course in probability: random variables,
+expectation, variance, independence and the Gaussian distribution. It
+corresponds to Chapter 8 of @prandoni2008.
+
+By the end of the chapter you should be able to:
+
+- describe a random process by its mean and autocorrelation, and decide whether
+  it is wide-sense stationary;
+- define and compute the power spectral density, and prove its relation to the
+  autocorrelation;
+- predict the autocorrelation and spectrum of filtered noise;
+- estimate a power spectral density with Welch's method, and explain why the
+  plain periodogram is not enough;
+- design a simple denoising filter and predict its SNR improvement.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal, stats
+
+rng = np.random.default_rng(10)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## Random variables and vectors, by simulation
+
+We recall the facts we need, and check each one with a simulation, because
+every statement about expectations has a counterpart about averages of many
+samples: by the **law of large numbers**, the average of $K$ independent copies of
+a random variable with finite mean converges to the mean as $K \to \infty$.
+
+For a random variable $X$ with mean $\mu = \mathbb{E}[X]$, the **variance** is
+$\sigma^2 = \mathbb{E}[(X - \mu)^2] = \mathbb{E}[X^2] - \mu^2$. For two random variables,
+the **covariance** is $\operatorname{Cov}(X, Y) = \mathbb{E}[XY] - \mathbb{E}[X]\mathbb{E}[Y]$; they are
+**uncorrelated** if it is zero. Independent variables are uncorrelated, and the
+variance of a sum of uncorrelated variables is the sum of their variances.
+Uncorrelated does not imply independent:
+
+```{python}
+K = 1_000_000
+X = rng.normal(size=K)
+Y = X ** 2                                         # completely determined by X
+print(f"mean of X: {X.mean():+.4f} (exact 0),  variance of X: {X.var():.4f} (exact 1)")
+print(f"covariance of X and X^2: {np.mean(X * Y) - X.mean() * Y.mean():+.4f} (exact 0)")
+
+U = rng.uniform(-1, 1, size=(K, 3))
+print(f"variance of a sum of 3 independent U(-1,1): {U.sum(axis=1).var():.4f} (exact {3 / 3:.4f})")
+```
+
+The covariance of $X$ and $X^2$ is $\mathbb{E}[X^3] = 0$ for a symmetric $X$, although
+$X^2$ is a function of $X$.
+
+## Random processes
+
+::: {#def-random-process}
+## Random process, mean and autocorrelation
+
+A **discrete-time random process** is a sequence of random variables $x[n]$,
+$n \in \mathbb{Z}$, defined on the same probability space; a **realisation** is
+the ordinary signal obtained for one outcome. For a real process with
+$\mathbb{E}[x[n]^2] < \infty$, the **mean** is $m_x[n] = \mathbb{E}[x[n]]$ and the
+**autocorrelation** is $r_x[n, m] = \mathbb{E}[x[n]\,x[m]]$.
 :::
 
-## Planned contents
+::: {#def-wss}
+## Wide-sense stationarity and white noise
 
-- Random variables, mean and variance, by simulation
-- Random processes and white noise
-- Power spectral density
-- Filtering noise; signal-to-noise ratio
-- A first denoising example
+A real process is **wide-sense stationary** (WSS) if its mean is constant,
+$m_x[n] = m_x$, and its autocorrelation depends only on the difference of the
+indices: $\mathbb{E}[x[n + k]\,x[n]] = r_x[k]$ for all $n, k$. A WSS process with
+$m_x = 0$ and $r_x[k] = \sigma^2\delta[k]$ is **white noise** of variance $\sigma^2$.
+:::
+
+A WSS process "looks the same" at all times, in terms of means and
+correlations. White noise has uncorrelated samples. A sequence of independent
+Gaussian variables with mean 0 and variance $\sigma^2$ is white noise, called
+**Gaussian white noise**; so is a sequence of independent uniform variables
+with mean 0.
+
+The autocorrelation of a WSS process has the properties of
+@prp-autocorrelation: $r_x[0] = \mathbb{E}[x[n]^2]$ is its **power**,
+$r_x[-k] = r_x[k]$, and $|r_x[k]| \le r_x[0]$, now by the Cauchy–Schwarz inequality
+for expectations, $|\mathbb{E}[XY]| \le \sqrt{\mathbb{E}[X^2]\mathbb{E}[Y^2]}$.
+
+Expectations are averages over many realisations (**ensemble averages**). In
+practice we usually have *one* long realisation and compute **time averages**,
+such as $\frac1N\sum_nx[n + k]x[n]$. For the processes in this book, which are
+**ergodic**, time averages converge to ensemble averages. We do not need the
+general theory; we simply check it in each case.
+
+::: {#exm-ar1}
+## A first-order autoregressive process
+
+Pass Gaussian white noise $w$ of variance $\sigma^2$ through the leaky
+recursion $x[n] = a\,x[n-1] + w[n]$, with $|a| < 1$. Then
+$x[n] = \sum_{k\ge0}a^kw[n - k]$ (the impulse response is $a^ku[k]$), which is WSS
+with mean 0 and
+$$
+r_x[k] = \sigma^2\sum_{i\ge0}a^{i + |k|}a^{i} = \frac{\sigma^2a^{|k|}}{1 - a^2}.
+$$
+Only the terms with the same noise sample contribute, because the $w[n]$ are
+uncorrelated. Such **AR(1)** processes model quantities with memory, such as
+daily temperature anomalies.
+:::
+
+```{python}
+#| label: fig-ar1
+#| fig-cap: "A realisation of an AR(1) process with $a = 0.9$ (top) and its autocorrelation estimated by a time average over $10^6$ samples (dots), against the formula (line)."
+a, sigma, N = 0.9, 1.0, 1_000_000
+x = signal.lfilter([1], [1, -a], rng.normal(0, sigma, N))[1000:]      # drop the start-up transient
+
+lags = np.arange(30)
+r_time = np.array([np.mean(x[k:] * x[: len(x) - k]) for k in lags])
+r_exact = sigma ** 2 * a ** lags / (1 - a ** 2)
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5))
+axes[0].plot(x[:400], lw=0.8)
+axes[1].plot(lags, r_exact)
+axes[1].plot(lags, r_time, ".", color="C3")
+axes[1].set_xlabel("lag $k$")
+plt.tight_layout()
+plt.show()
+
+assert np.allclose(r_time, r_exact, rtol=0.05)
+```
+
+## Power spectral density
+
+A random signal has no DTFT in the usual sense: a realisation of white noise is
+not even absolutely summable. What does have a transform is its
+autocorrelation.
+
+::: {#def-psd}
+## Power spectral density
+
+The **power spectral density** (PSD) of a WSS process with absolutely summable
+autocorrelation is
+$$
+S_x(e^{j\omega}) = \sum_{k=-\infty}^{\infty}r_x[k]\,e^{-j\omega k}.
+$$
+:::
+
+By the inversion formula (@prp-dtft-basics),
+$r_x[0] = \frac1{2\pi}\int_{-\pi}^{\pi}S_x(e^{j\omega})d\omega$: the power is the
+area under the PSD, divided by $2\pi$. White noise has a flat PSD,
+$S_x = \sigma^2$, with equal power at all frequencies, which is where its name comes
+from (white light contains all colours). The name *density* is justified by the
+next theorem: $S_x(e^{j\omega})$ is the power per unit frequency that a long
+observation finds near $\omega$.
+
+::: {#thm-wiener-khinchin}
+## Wiener–Khinchin
+
+Let $x$ be a real WSS process with absolutely summable autocorrelation, and let
+$X_N(e^{j\omega}) = \sum_{n=0}^{N-1}x[n]e^{-j\omega n}$ be the DTFT of $N$ samples. Then
+$$
+\mathbb{E}\left[\frac{|X_N(e^{j\omega})|^2}{N}\right] = \sum_{|k| < N}\Big(1 - \frac{|k|}{N}\Big)r_x[k]\,e^{-j\omega k}
+\ \xrightarrow[N \to \infty]{}\ S_x(e^{j\omega})
+$$
+for every $\omega$, uniformly.
+:::
+
+::: {.proof}
+$|X_N|^2 = \sum_{n=0}^{N-1}\sum_{m=0}^{N-1}x[n]x[m]e^{-j\omega(n - m)}$, a finite sum, so
+its expectation is $\sum_n\sum_mr_x[n - m]e^{-j\omega(n - m)}$. For each $k$ with
+$|k| < N$ there are exactly $N - |k|$ pairs $(n, m)$ in the square with $n - m = k$;
+dividing by $N$ gives the middle expression. Its difference from $S_x$ is
+$\sum_{|k|<N}\frac{|k|}{N}r_x[k]e^{-j\omega k} + \sum_{|k|\ge N}r_x[k]e^{-j\omega k}$. The
+second sum is a tail of a convergent series. For the first, given $\varepsilon > 0$
+choose $K$ with $\sum_{|k| > K}|r_x[k]| < \varepsilon$; then for $N > K$ it is at most
+$\frac KN\sum_k|r_x[k]| + \varepsilon$, which is below $2\varepsilon$ for $N$ large. Neither
+bound depends on $\omega$.
+:::
+
+The quantity $|X_N(e^{j\omega})|^2/N$, evaluated at the DFT frequencies, is the
+**periodogram**, the most natural estimate of the PSD from data. The theorem
+says that it is right *on average*. It does not say that one periodogram is
+close to $S_x$, and indeed it is not:
+
+```{python}
+#| label: fig-periodogram
+#| fig-cap: "Periodograms of Gaussian white noise with $\\sigma^2 = 1$ from 256 and 16384 samples (top two), and Welch's estimate from the same 16384 samples (bottom). More data makes the periodogram denser, not smoother; averaging makes it converge."
+fig, axes = plt.subplots(3, 1, figsize=(7, 5.5), sharex=True, sharey=True)
+for ax, N in zip(axes[:2], [256, 16384]):
+    w_noise = rng.normal(size=N)
+    P = np.abs(np.fft.rfft(w_noise)) ** 2 / N
+    ax.plot(np.linspace(0, np.pi, len(P)), P, lw=0.5)
+    ax.set_title(f"periodogram, N = {N}: std of the estimate {P[1:-1].std():.2f}", fontsize=9)
+f, P_welch = signal.welch(w_noise, fs=2 * np.pi, nperseg=256, return_onesided=False)
+keep = f <= np.pi
+axes[2].plot(f[keep], 2 * np.pi * P_welch[keep], lw=0.8)
+axes[2].set_title(f"Welch, segments of 256: std {(2 * np.pi * P_welch).std():.2f}", fontsize=9)
+axes[2].set_xlabel(r"$\omega$")
+for ax in axes:
+    ax.axhline(1, color="C3", ls="--", lw=0.8)
+plt.tight_layout()
+plt.show()
+```
+
+For Gaussian white noise each periodogram value is, approximately, the true PSD
+times an exponential random variable, whose standard deviation equals its mean
+whatever $N$ is: more samples give more frequencies, each one just as noisy.
+**Welch's method** cuts the signal into overlapping segments, multiplies each
+by a window, computes their periodograms and averages them. Averaging $M$
+roughly independent estimates divides the standard deviation by about
+$\sqrt M$, at the price of the frequency resolution of a shorter segment: the
+trade-off of @sec-spectral-analysis again. `signal.welch` implements it.
+
+A note on units: with `fs=2*np.pi` and `return_onesided=False`, `welch` returns a
+density per radian whose integral over $[-\pi, \pi)$ is the power; multiplying by
+$2\pi$ gives $S_x$ in the convention of @def-psd. With the default one-sided
+output and `fs` in Hz, the result is in units of power per Hz, with the
+negative frequencies folded onto the positive ones.
+
+## Filtering random processes
+
+::: {#thm-filtered-process}
+## LTI filtering of a WSS process
+
+Let $x$ be a real WSS process with absolutely summable autocorrelation, and $h$
+a real absolutely summable impulse response. Then $y = h * x$ is WSS, with
+$$
+m_y = m_x\sum_kh[k], \qquad
+r_y[k] = \sum_i\sum_lh[i]\,h[l]\,r_x[k - i + l], \qquad
+S_y(e^{j\omega}) = |H(e^{j\omega})|^2\,S_x(e^{j\omega}).
+$$
+In particular, filtered white noise of variance $\sigma^2$ has
+$S_y = \sigma^2|H|^2$ and power $\sigma^2\sum_kh[k]^2$.
+:::
+
+::: {.proof}
+All interchanges of expectation and summation below are justified by absolute
+convergence: $\mathbb{E}|x[n]x[m]| \le r_x[0]$ by Cauchy–Schwarz, and
+$\sum_i\sum_l|h[i]||h[l]|r_x[0] < \infty$. Then
+$\mathbb{E}[y[n]] = \sum_ih[i]m_x$, and
+$$
+\mathbb{E}[y[n + k]\,y[n]] = \sum_i\sum_lh[i]h[l]\,\mathbb{E}[x[n + k - i]\,x[n - l]] = \sum_i\sum_lh[i]h[l]\,r_x[k - i + l],
+$$
+which does not depend on $n$. This is $r_y = h * \bar h * r_x$ with
+$\bar h[l] = h[-l]$, whose DTFT is $\overline{H(e^{j\omega})}$ for real $h$. By
+@thm-convolution-theorem (all three sequences are absolutely summable),
+$S_y = H\,\overline{H}\,S_x = |H|^2S_x$. For white noise, $r_x = \sigma^2\delta$ gives
+$r_y[0] = \sigma^2\sum_ih[i]^2$.
+:::
+
+Filters shape the spectrum of noise exactly as they shape the spectrum of any
+signal, but through $|H|^2$: power, not amplitude. The AR(1) process of
+@exm-ar1 is white noise through $H = 1/(1 - ae^{-j\omega})$, so
+$S_x = \sigma^2/|1 - ae^{-j\omega}|^2$, which is also the DTFT of the autocorrelation
+we computed there. We verify the theorem for that process and for white noise
+through a band-pass FIR filter, estimating the output PSD with Welch:
+
+```{python}
+#| label: fig-filtered-noise
+#| fig-cap: "PSD of white noise passed through an AR(1) recursion with $a = 0.9$ (left) and through a band-pass FIR filter (right): Welch estimates (grey) and $\\sigma^2|H|^2$ (line)."
+N = 1 << 18
+w_noise = rng.normal(0, 1.0, N)
+h_bp = signal.firwin(101, [0.3, 0.5], pass_zero=False)
+cases = [("AR(1), a = 0.9", [1], [1, -0.9]), ("band-pass FIR", h_bp, [1])]
+
+fig, axes = plt.subplots(1, 2, figsize=(7, 3))
+for ax, (name, b, a_) in zip(axes, cases):
+    y = signal.lfilter(b, a_, w_noise)[2000:]
+    f, P = signal.welch(y, fs=2 * np.pi, nperseg=1024, return_onesided=False)
+    keep = (f >= 0) & (f <= np.pi)
+    S_est = 2 * np.pi * P[keep]
+    _, H = signal.freqz(b, a_, worN=f[keep])
+    S_theory = np.abs(H) ** 2
+    ax.semilogy(f[keep], S_est, color="0.6", lw=0.8)
+    ax.semilogy(f[keep], S_theory, lw=1.2)
+    ax.set_title(name, fontsize=10); ax.set_xlabel(r"$\omega$")
+    big = S_theory > 0.1 * S_theory.max()
+    print(f"{name}: median |estimate/theory - 1| = {np.median(np.abs(S_est[big] / S_theory[big] - 1)):.3f}")
+    assert np.median(np.abs(S_est[big] / S_theory[big] - 1)) < 0.1
+plt.tight_layout()
+plt.show()
+```
+
+## Signal-to-noise ratio and a first denoiser
+
+A measurement $r[n] = s[n] + w[n]$ contains a useful signal $s$ and noise $w$,
+uncorrelated with it. Its quality is the **signal-to-noise ratio**
+$\mathrm{SNR} = P_s/P_w$, the ratio of the two powers. A filter $h$ changes both
+parts, and by linearity it acts on each separately:
+$h * r = h * s + h * w$. By @thm-filtered-process, the noise power after the
+filter is $\frac{1}{2\pi}\int|H|^2S_w\,d\omega$. If the signal occupies only part
+of the spectrum and the noise is white, a filter that passes the signal's band
+and blocks the rest removes most of the noise power and little of the signal's.
+
+As an example, a "signal" made of three low-frequency tones, with white noise
+of the same power: an SNR of 0 dB.
+
+```{python}
+#| label: fig-denoising
+#| fig-cap: "A signal of three tones below $0.1\\pi$ in white noise at 0 dB SNR (top), and after a 201-tap low-pass FIR filter with cut-off $0.12\\pi$ (bottom, the clean signal dashed). The filter's delay of 100 samples has been compensated."
+N = 1 << 16
+n = np.arange(N)
+s = (np.cos(0.02 * np.pi * n) + 0.7 * np.cos(0.05 * np.pi * n + 1) + 0.5 * np.cos(0.09 * np.pi * n + 2))
+sigma2 = np.mean(s ** 2)                                          # noise power = signal power
+w_noise = rng.normal(0, np.sqrt(sigma2), N)
+r = s + w_noise
+
+h = signal.firwin(201, 0.12)
+delay = 100
+s_out = np.convolve(s, h)[delay: delay + N]
+w_out = np.convolve(w_noise, h)[delay: delay + N]
+r_out = s_out + w_out
+
+snr_in = 10 * np.log10(np.mean(s ** 2) / np.mean(w_noise ** 2))
+snr_out = 10 * np.log10(np.mean(s[500:-500] ** 2) / np.mean((r_out - s)[500:-500] ** 2))
+predicted_noise = sigma2 * np.sum(h ** 2)                        # Theorem: σ² Σ h²
+print(f"SNR in {abs(snr_in):.1f} dB (measured {snr_in:+.3f}), out {snr_out:.1f} dB")
+print(f"noise power after the filter: measured {np.mean(w_out ** 2):.4f}, predicted {predicted_noise:.4f}")
+assert np.isclose(np.mean(w_out[500:-500] ** 2), predicted_noise, rtol=0.03)
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True, sharey=True)
+axes[0].plot(n[:1500], r[:1500], lw=0.6)
+axes[1].plot(n[:1500], r_out[:1500], lw=0.9)
+axes[1].plot(n[:1500], s[:1500], "k--", lw=0.6)
+axes[1].set_xlabel("$n$")
+plt.tight_layout()
+plt.show()
+```
+
+The filter keeps about 12 % of the band, so it keeps about 12 % of the white
+noise power: the prediction is $\sigma^2\sum h^2$, and the gain is close to
+$10\log_{10}(1/0.12) \approx 9$ dB. Narrower bands give larger gains, but no
+filter can remove the noise that lies *inside* the signal's band. The best
+linear filter for a given signal and noise spectrum is the **Wiener filter**,
+$H = S_s/(S_s + S_w)$, which weighs each frequency by how much of it is signal
+(Exercise 6).
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: how narrow can the filter be?
+
+Change the cut-off `fc` (in units of $\pi$) and watch the output SNR. It
+improves as the band shrinks, until the filter starts to cut the signal itself.
+Where is the optimum?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+rng = np.random.default_rng(1)
+fc = 0.12
+N = 1 << 15
+n = np.arange(N)
+s = np.cos(0.02 * np.pi * n) + 0.7 * np.cos(0.05 * np.pi * n + 1) + 0.5 * np.cos(0.09 * np.pi * n + 2)
+r = s + rng.normal(0, np.sqrt(np.mean(s ** 2)), N)
+h = signal.firwin(201, fc)
+out = np.convolve(r, h)[100: 100 + N]
+snr = 10 * np.log10(np.mean(s[500:-500] ** 2) / np.mean((out - s)[500:-500] ** 2))
+plt.plot(n[:1000], out[:1000]); plt.plot(n[:1000], s[:1000], "k--", lw=0.7)
+plt.title(f"cut-off {fc}π: output SNR {snr:.1f} dB (input 0 dB)")
+plt.show()
+```
+:::
+::::
+
+## Summary
+
+- A random process is a sequence of random variables. It is WSS if its mean
+  is constant and $\mathbb{E}[x[n + k]x[n]] = r_x[k]$ depends only on the lag
+  (@def-wss). White noise has $r_x = \sigma^2\delta$.
+- The PSD is the DTFT of the autocorrelation (@def-psd). It is the limit of the
+  expected periodogram (@thm-wiener-khinchin) and its integral, over $2\pi$,
+  is the power.
+- A single periodogram does not converge; Welch's method averages periodograms
+  of segments to reduce the variance.
+- Filtering a WSS process multiplies its PSD by $|H|^2$; white noise of variance
+  $\sigma^2$ leaves a filter with power $\sigma^2\sum h^2$
+  (@thm-filtered-process).
+- Denoising by filtering removes the noise outside the signal's band. The SNR
+  gain is predicted by the fraction of the noise power that the filter keeps.
+
+## Exercises
+
+1. **Uniform white noise.** Generate white noise uniform on $[-\Delta/2, \Delta/2]$.
+   Find its variance and PSD, and verify both numerically. This is the model of
+   quantization error in @sec-quantization.
+2. **AR(1) spectrum.** Prove that the DTFT of $\sigma^2a^{|k|}/(1 - a^2)$ is
+   $\sigma^2/|1 - ae^{-j\omega}|^2$, directly from the geometric series. For which
+   $a$ is the noise "low-pass"? "High-pass"?
+3. **Moving average of white noise.** Compute $r_y$ and $S_y$ for white noise
+   through an $M$-point moving average, and verify with simulations. At which lags
+   are the output samples uncorrelated?
+4. **Bias of the periodogram.** Using @thm-wiener-khinchin, compute
+   $\mathbb{E}[|X_N|^2/N]$ for the AR(1) process with $a = 0.95$ and $N = 32$, and
+   compare it with $S_x$. Where is the bias largest, and why?
+5. **Welch's trade-off.** For a signal made of two close tones in white noise,
+   find the segment length in `signal.welch` that best shows both tones, for
+   $N = 4096$ and for $N = 65536$ samples.
+6. **Wiener filter.** For $r = s + w$ with $s$ and $w$ uncorrelated WSS processes,
+   show that the frequency response minimising $\mathbb{E}[(y[n] - s[n])^2]$ at every
+   frequency is $H = S_s/(S_s + S_w)$, assuming the optimisation can be done
+   frequency by frequency. Apply it to an AR(1) signal with $a = 0.95$ in white
+   noise, and compare its output SNR with that of the best low-pass filter.
+7. **Ergodicity can fail.** Let $x[n] = A$ for all $n$, where $A$ is a single random
+   variable with mean 0 and variance 1. Show that $x$ is WSS, compute $r_x$, and
+   show that time averages of one realisation do not converge to $\mathbb{E}[x[n]] = 0$.

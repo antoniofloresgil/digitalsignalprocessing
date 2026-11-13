@@ -1,18 +1,440 @@
 # Filter Design {#sec-filter-design}
 
-Turning a specification (pass these frequencies, block those) into filter coefficients.
+@sec-lti and @sec-z-transform analysed filters that were given. This chapter
+goes the other way: from a description of what a filter should do to its
+coefficients. The description is a **specification** in the frequency domain:
+which frequencies must pass, which must be removed, and how much error is
+tolerated. The ideal answer, a filter that passes some frequencies untouched
+and removes all others, cannot be built. Every practical design is a
+controlled approximation of it, and the art lies in trading accuracy, length,
+delay and computational cost.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+We follow Chapter 7 of @prandoni2008: FIR design by windowing and by the
+minimax method, IIR design from the classic analog prototypes, simple filters
+placed by hand, and the numerical issues of implementation.
+
+By the end of the chapter you should be able to:
+
+- write a filter specification and read it off a magnitude response;
+- explain why the ideal low-pass filter is not realisable;
+- design FIR filters with windows and predict their attenuation and transition
+  width;
+- design optimal FIR filters with Parks–McClellan, and IIR filters with
+  Butterworth, Chebyshev and elliptic prototypes;
+- choose between FIR and IIR for a given application;
+- explain why high-order IIR filters are implemented as cascades of
+  second-order sections.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+from scipy.signal import argrelmin
+
+rng = np.random.default_rng(9)
+plt.rcParams["figure.figsize"] = (7, 3)
+
+def db(v):
+    return 20 * np.log10(np.maximum(np.abs(v), 1e-12))
+```
+
+## Specifications
+
+A low-pass filter should let frequencies up to $\omega_p$ through and block those
+above $\omega_s > \omega_p$. A specification makes this quantitative.
+
+::: {#def-filter-spec}
+## Low-pass specification
+
+A filter meets the specification $(\omega_p, \omega_s, \delta_p, \delta_s)$ if
+$$
+1 - \delta_p \le |H(e^{j\omega})| \le 1 + \delta_p \ \text{ for } 0 \le \omega \le \omega_p,
+\qquad
+|H(e^{j\omega})| \le \delta_s \ \text{ for } \omega_s \le \omega \le \pi .
+$$
+$[0, \omega_p]$ is the **passband**, $[\omega_s, \pi]$ the **stopband** and
+$(\omega_p, \omega_s)$ the **transition band**, where nothing is required.
+$\delta_p$ is the passband **ripple** and $-20\log_{10}\delta_s$ the stopband
+**attenuation** in dB.
 :::
 
-## Planned contents
+High-pass, band-pass and band-stop specifications are analogous. There are
+four things to trade: a narrower transition band, smaller ripples, a shorter
+filter, and a shorter delay cannot all be had at once.
 
-- Specifications: passband, stopband, transition band and tolerances
-- Ideal filters and why they cannot be built
-- FIR design by windowing
-- Optimal (minimax) FIR design with Parks–McClellan
-- Simple IIR filters: DC removal and resonators
-- Filter structures and numerical precision
+## The ideal low-pass filter
+
+The ideal low-pass filter with cut-off $\omega_c$ has
+$H(e^{j\omega}) = 1$ for $|\omega| < \omega_c$ and $0$ for $\omega_c < |\omega| \le \pi$,
+repeated with period $2\pi$.
+
+::: {#prp-ideal-lowpass}
+## Impulse response of the ideal low-pass filter
+
+The ideal low-pass filter has impulse response
+$$
+h[n] = \frac{1}{2\pi}\int_{-\omega_c}^{\omega_c}e^{j\omega n}d\omega = \frac{\sin(\omega_c n)}{\pi n}\ (n \ne 0),
+\qquad h[0] = \frac{\omega_c}{\pi}.
+$$
+It is not causal, has finite energy, and is not absolutely summable when
+$0 < \omega_c < \pi$, so the filter is not BIBO-stable.
+:::
+
+::: {.proof}
+The integral is elementary. $h$ is even and nonzero for infinitely many
+negative $n$, so it is not causal (@prp-causality). Its energy is
+$\frac1{2\pi}\int|H|^2 = \omega_c/\pi$ by Parseval. For absolute summability, the
+identity $\sin\omega_c = \sin(\omega_c(n+1))\cos(\omega_cn) - \cos(\omega_c(n+1))\sin(\omega_cn)$
+gives $|\sin(\omega_c n)| + |\sin(\omega_c(n+1))| \ge |\sin\omega_c| > 0$ for every $n$.
+Grouping the terms in pairs $(2m - 1, 2m)$,
+$\sum_{n\ge1}|h[n]| \ge \sum_{m\ge1}\frac{|\sin\omega_c|}{2\pi m} = \infty$.
+:::
+
+The ideal filter is a useful target, not a device. It also shows the price of
+sharpness: a frequency response with a jump has an impulse response that
+decays only like $1/n$, exactly as the Fourier series of a square wave
+(@sec-spectral-analysis) has coefficients that decay like $1/k$.
+
+## FIR design by windowing
+
+The obvious approximation keeps the central part of the ideal impulse response
+and delays it so that it becomes causal: for odd length $N$ and
+$D = (N - 1)/2$,
+$$
+h[n] = w[n]\,h_{\text{ideal}}[n - D], \qquad 0 \le n \le N - 1,
+$$
+where $w$ is a window of length $N$. What does the window do to the frequency
+response? Multiplying in time is the dual of convolving in time.
+
+::: {#prp-windowing}
+## Multiplication in time is convolution in frequency
+
+If $w$ has finite support and $g$ is absolutely summable, the DTFT of
+$y[n] = w[n]g[n]$ is
+$$
+Y(e^{j\omega}) = \frac{1}{2\pi}\int_{-\pi}^{\pi}G(e^{j\theta})\,W(e^{j(\omega - \theta)})\,d\theta .
+$$
+:::
+
+::: {.proof}
+$W(e^{j(\omega - \theta)}) = \sum_nw[n]e^{-j(\omega - \theta)n}$ is a finite sum, so the
+integral is $\sum_nw[n]e^{-j\omega n}\frac1{2\pi}\int_{-\pi}^{\pi}G(e^{j\theta})e^{j\theta n}d\theta = \sum_nw[n]g[n]e^{-j\omega n}$
+by the inversion formula of @prp-dtft-basics.
+:::
+
+So the designed response is the ideal one, a rectangle, smeared by the window's
+transform. Its main lobe turns the jump into a **transition band** whose width
+is the main-lobe width; its side lobes produce **ripples** in both bands, whose
+size depends on the side lobes' *area*, not on the length. With the rectangular
+window this is exactly the Gibbs phenomenon of @sec-spectral-analysis, and the
+ripple never goes below about 9 %, or $-21$ dB, however long the filter.
+Smoother windows have smaller side lobes and wider main lobes. We measure both
+quantities for four windows and three lengths, with `signal.firwin`, which
+implements exactly this method.
+
+```{python}
+def window_design_figures(window, N, cutoff=0.3):
+    """Stopband attenuation (dB) and transition width (in units of 2π/N) of a firwin design."""
+    h = signal.firwin(N, cutoff, window=window)
+    w, H = signal.freqz(h, worN=1 << 15)
+    mag = np.abs(H)
+    i_c = np.searchsorted(w, cutoff * np.pi)
+    first_null = i_c + argrelmin(mag[i_c:])[0][0]
+    return db(mag[first_null:].max()), (w[first_null] - cutoff * np.pi) / (2 * np.pi / N)
+
+print("window     N    attenuation   transition (×2π/N)")
+table = {}
+for window in ["boxcar", "hann", "hamming", "blackman"]:
+    for N in [51, 101, 201]:
+        att, tw = window_design_figures(window, N)
+        table[window, N] = att
+        print(f"{window:9s} {N:4d}   {att:8.1f} dB   {tw:8.2f}")
+
+for window, expected in [("boxcar", -21), ("hann", -44), ("hamming", -53), ("blackman", -75)]:
+    assert all(abs(table[window, N] - expected) < 1.5 for N in [51, 101, 201])
+```
+
+The table shows the two laws of window design. The **attenuation depends only
+on the window**, not on $N$. The **transition width is inversely proportional
+to $N$**, with a constant that depends on the window. To design a filter, pick
+the window that meets the attenuation, then the length that meets the
+transition width.
+
+```{python}
+#| label: fig-window-designs
+#| fig-cap: "Low-pass filters of length 51 with cut-off $0.3\\pi$ designed with four windows. Smoother windows buy stopband attenuation with wider transition bands."
+fig, ax = plt.subplots(figsize=(7, 3.4))
+for window in ["boxcar", "hann", "hamming", "blackman"]:
+    w, H = signal.freqz(signal.firwin(51, 0.3, window=window), worN=4096)
+    ax.plot(w / np.pi, db(H), lw=0.9, label=window)
+ax.set_ylim(-110, 5)
+ax.set_xlabel(r"$\omega/\pi$"); ax.set_ylabel("dB"); ax.legend()
+plt.show()
+```
+
+The **Kaiser window** has a parameter $\beta$ that moves continuously between
+these trade-offs, and empirical formulas give $\beta$ and $N$ directly from the
+specification. `signal.kaiserord` implements them.
+
+### Linear phase
+
+All the designs above share a property that matters as much as the magnitude.
+
+::: {#prp-linear-phase}
+## Symmetric FIR filters have linear phase
+
+If $h$ is real with length $N$ and $h[n] = h[N - 1 - n]$ for all $n$, then
+$$
+H(e^{j\omega}) = e^{-j\omega\frac{N-1}{2}}A(\omega)
+$$
+with $A(\omega)$ real. The filter delays every frequency by the same
+$(N-1)/2$ samples (its **group delay** is constant).
+:::
+
+::: {.proof}
+Pair the terms $n$ and $N - 1 - n$:
+$h[n]\big(e^{-j\omega n} + e^{-j\omega(N - 1 - n)}\big) = e^{-j\omega\frac{N-1}{2}}\,2h[n]\cos\!\big(\omega(n - \tfrac{N-1}{2})\big)$,
+and for odd $N$ the middle term is $h[D]e^{-j\omega D}$. Summing, $A(\omega)$ is a sum
+of real terms.
+:::
+
+A constant delay preserves the shape of waveforms: a pulse that goes through a
+linear-phase filter comes out delayed, smoothed if high frequencies were
+removed, but not distorted by different frequencies arriving at different
+times. This is essential for data communications (@sec-modem) and for images.
+IIR filters cannot have exactly linear phase when they are causal and stable.
+
+## Optimal FIR design
+
+Windowing is simple but not optimal: its error is largest near the band edges
+and wasted elsewhere. The **minimax** design minimises the largest weighted
+error over the bands,
+$$
+\min_{h}\ \max_{\omega \in \text{bands}} \big|\,E(\omega)\big|\,\big|A(\omega) - D(\omega)\big|,
+$$
+where $D$ is the desired response (1 in the passband, 0 in the stopband) and
+$E$ a weight. The **alternation theorem** characterises the solution: the
+optimal error ripples with equal height and attains its maximum, with
+alternating signs, at least $L + 2$ times, where $L$ is the number of free
+coefficients (see Section 7.2.2 of @prandoni2008 or @oppenheim2010 for the
+statement and proof). The **Parks–McClellan** algorithm, `signal.remez`,
+computes it. We compare it with the Kaiser method for one specification:
+passband edge $0.25\pi$, stopband edge $0.30\pi$, $\delta_p = \delta_s = 0.001$
+(60 dB).
+
+```{python}
+delta = 0.001
+bands = [0, 0.25, 0.30, 1]                                      # in units of π (fs = 2)
+
+def worst_error(h):
+    w, H = signal.freqz(h, worN=1 << 14, fs=2)
+    return max(np.abs(np.abs(H[w <= 0.25]) - 1).max(), np.abs(H[w >= 0.30]).max())
+
+N_kaiser, beta = signal.kaiserord(-20 * np.log10(delta), 0.05)
+N_kaiser += 1 - N_kaiser % 2                                      # odd length
+h_kaiser = signal.firwin(N_kaiser, 0.275, window=("kaiser", beta), fs=2)
+while worst_error(h_kaiser) > delta:                              # the formula is approximate
+    N_kaiser += 2
+    h_kaiser = signal.firwin(N_kaiser, 0.275, window=("kaiser", beta), fs=2)
+
+N_remez = 31
+while worst_error(h_remez := signal.remez(N_remez, bands, [1, 0], fs=2)) > delta:
+    N_remez += 2
+
+print(f"Kaiser window: {N_kaiser} taps; Parks-McClellan: {N_remez} taps")
+```
+
+```{python}
+#| label: fig-remez-kaiser
+#| fig-cap: "Two filters meeting the same 60 dB specification: Kaiser window design (left) and Parks-McClellan (right). The minimax design spreads its error evenly (equiripple) and needs fewer taps."
+fig, axes = plt.subplots(1, 2, figsize=(7, 3), sharey=True)
+for ax, h, name in zip(axes, [h_kaiser, h_remez], ["Kaiser", "Parks-McClellan"]):
+    w, H = signal.freqz(h, worN=1 << 13, fs=2)
+    ax.plot(w, db(H), lw=0.8)
+    ax.axhline(-60, color="C3", ls="--", lw=0.8)
+    ax.set_title(f"{name}, N = {len(h)}", fontsize=10)
+    ax.set_xlabel(r"$\omega/\pi$")
+axes[0].set_ylim(-100, 5); axes[0].set_ylabel("dB")
+plt.tight_layout()
+plt.show()
+```
+
+The saving here is modest, about one tap in eight. It grows when the passband and stopband
+tolerances differ, because `remez` can weight the bands while a window applies
+the same tolerance to both.
+
+## IIR design
+
+FIR filters with sharp transitions are long: the 60 dB filter above needs over a
+hundred multiplications per sample. Recursive filters reach the same
+magnitude specification with far fewer coefficients, because their poles can
+sit close to the unit circle and produce sharp edges.
+
+### Simple filters placed by hand
+
+Two of the most common IIR filters are designed with the pole–zero reasoning
+of @sec-z-transform.
+
+- The **DC blocker** removes a constant offset, such as the bias of a
+  microphone: a zero at $z = 1$ kills frequency 0, and a pole just inside, at
+  $z = \rho$, restores the response elsewhere:
+  $y[n] = x[n] - x[n-1] + \rho\,y[n-1]$, $H(z) = \frac{1 - z^{-1}}{1 - \rho z^{-1}}$.
+- The **resonator** of the *Try it* box in @sec-z-transform picks out one
+  frequency with a pair of poles near the circle.
+
+```{python}
+#| label: fig-dc-blocker
+#| fig-cap: "A DC blocker with $\\rho = 0.98$ applied to a tone riding on a slowly drifting offset (top). The constant offset is removed, the drift is strongly reduced and the tone passes almost unchanged (bottom)."
+n = np.arange(4000)
+x = 0.5 * np.sin(2 * np.pi * 0.01 * n) + 2.0 + 0.5 * np.sin(2 * np.pi * 0.0003 * n)
+rho = 0.98
+y = signal.lfilter([1, -1], [1, -rho], x)
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4), sharex=True)
+axes[0].plot(n, x, lw=0.7); axes[1].plot(n, y, lw=0.7)
+axes[1].set_xlabel("$n$")
+plt.tight_layout()
+plt.show()
+w_check, H_check = signal.freqz([1, -1], [1, -rho], worN=[0, 2 * np.pi * 0.0003, 2 * np.pi * 0.01])
+print("gain at DC, at the drift and at the tone:", np.abs(H_check).round(3))
+```
+
+### Classic designs
+
+For demanding specifications, IIR filters are designed by transforming
+analog prototypes that have been studied for decades: **Butterworth**
+(maximally flat, no ripple), **Chebyshev** (ripple in one band) and
+**elliptic** (ripple in both, the steepest for a given order). The analog filter
+is mapped to a digital one by the *bilinear transform*, which preserves
+stability and the shape of the magnitude response up to a warping of the
+frequency axis; see Section 7.3 of @prandoni2008. SciPy does all this: the
+functions `buttord`, `cheb1ord` and `ellipord` find the minimum order for a
+specification, and `butter`, `cheby1` and `ellip` design the filter.
+
+```{python}
+gpass = 20 * np.log10((1 + delta) / (1 - delta))                # passband ripple in dB
+print("design          order   multiplications per sample")
+for name, ordfn in [("Butterworth", signal.buttord), ("Chebyshev I", signal.cheb1ord),
+                    ("elliptic", signal.ellipord)]:
+    order = ordfn(0.25, 0.30, gpass, 60)[0]
+    print(f"{name:13s} {order:6d}   {2 * order + 1:6d}")
+print(f"{'FIR (remez)':13s} {N_remez - 1:6d}   {N_remez:6d}")
+```
+
+The elliptic filter meets the specification with a handful of coefficients
+instead of more than a hundred. The price is phase: an IIR filter delays
+different frequencies differently, which distorts waveforms. When the whole
+signal is available, `signal.filtfilt` runs the filter forwards and then
+backwards, which cancels the phase entirely at the cost of causality. The rule
+of thumb is: **IIR when magnitude is all that matters and computation is
+scarce; FIR when phase matters, or when the filter must be simple and
+unconditionally stable.**
+
+## Structures and numerical precision
+
+A transfer function can be implemented in many ways that are equivalent in
+exact arithmetic and very different with finite precision. The **direct form**
+uses the coefficients $b_k$, $a_k$ of the CCDE as they are. The **cascade
+form** factors $H(z)$ into **second-order sections** (SOS), each with two poles
+and two zeros, and runs them one after the other.
+
+The difference shows up as soon as coefficients are stored with finite
+precision, as in any fixed-point processor. The roots of a high-degree
+polynomial are extremely sensitive to its coefficients; the roots of a
+quadratic are not. We round the coefficients of a 10th-order Butterworth
+low-pass filter to a fixed number of fractional bits and look at the largest
+pole modulus:
+
+```{python}
+b, a = signal.butter(10, 0.05)
+sos = signal.butter(10, 0.05, output="sos")
+
+print("fractional bits   direct form max|p|   cascade (SOS) max|p|")
+for bits in [16, 20, 24, 32]:
+    q = 2.0 ** -bits
+    a_q, sos_q = np.round(a / q) * q, np.round(sos / q) * q
+    p_direct = np.abs(np.roots(a_q)).max()
+    p_sos = max(np.abs(np.roots(section[3:])).max() for section in sos_q)
+    print(f"{bits:10d}        {p_direct:12.5f}        {p_sos:12.5f}")
+
+a_24 = np.round(a / 2.0 ** -24) * 2.0 ** -24
+sos_16 = np.round(sos / 2.0 ** -16) * 2.0 ** -16
+assert np.abs(np.roots(a_24)).max() > 1                            # direct form: unstable
+assert all(np.abs(np.roots(s[3:])).max() < 1 for s in sos_16)      # SOS: stable even with 16 bits
+```
+
+With 24 fractional bits, more than most fixed-point processors offer, the
+direct form already has a pole outside the unit circle and is unstable. The
+cascade is stable with 16 bits. This is why `scipy.signal` can return designs
+as `sos` arrays, run by `signal.sosfilt`, and why every serious implementation
+of an IIR filter of order above two uses second-order sections.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: design to a specification
+
+Change the stopband attenuation `att` and the transition width, and compare the
+lengths of the window and minimax designs. Can you confirm that the length
+grows roughly in proportion to the attenuation in dB and inversely to the
+transition width?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+att, f_pass, f_stop = 60, 0.25, 0.30                  # dB, edges in units of pi
+N, beta = signal.kaiserord(att, f_stop - f_pass)
+h = signal.firwin(N, (f_pass + f_stop) / 2, window=("kaiser", beta), fs=2)
+w, H = signal.freqz(h, worN=4096, fs=2)
+plt.plot(w, 20 * np.log10(np.abs(H) + 1e-12))
+plt.axhline(-att, color="C3", ls="--")
+plt.ylim(-att - 40, 5)
+plt.title(f"Kaiser design: N = {N}, beta = {beta:.2f}")
+plt.show()
+```
+:::
+::::
+
+## Summary
+
+- A specification fixes passband and stopband edges and tolerances
+  (@def-filter-spec). The ideal low-pass filter is non-causal and unstable
+  (@prp-ideal-lowpass).
+- Windowing multiplies the ideal impulse response by a window, which convolves
+  the ideal frequency response with the window's transform (@prp-windowing).
+  The window fixes the attenuation; the length fixes the transition width.
+- Symmetric FIR filters have exactly linear phase (@prp-linear-phase).
+- Parks–McClellan finds the minimax (equiripple) FIR filter, shorter than a
+  window design for the same specification.
+- IIR filters meet magnitude specifications with far fewer coefficients, at the
+  cost of nonlinear phase. Butterworth, Chebyshev and elliptic designs trade
+  flatness for order.
+- High-order IIR filters must be implemented as cascades of second-order
+  sections: direct forms are numerically fragile.
+
+## Exercises
+
+1. **The ideal high-pass filter.** Find the impulse response of the ideal
+   high-pass filter with cut-off $\omega_c$ in terms of that of the ideal
+   low-pass filter. Design a high-pass filter by windowing and check it.
+2. **Band-pass by modulation.** Multiply a low-pass impulse response by
+   $2\cos(\omega_0n)$. Use @prp-dtft-modulation to explain why the result is a
+   band-pass filter centred on $\omega_0$, and design one for the band
+   $[0.4\pi, 0.5\pi]$.
+3. **Kaiser's formula.** Kaiser's estimate of the length is
+   $N \approx \frac{A - 8}{2.285\,\Delta\omega}$, with $A$ the attenuation in dB and
+   $\Delta\omega$ the transition width in rad/sample. Compare it with the lengths
+   found by `kaiserord` and by trial for several specifications.
+4. **Equiripple.** Count the extrema of the error of the Parks–McClellan filter
+   designed in this chapter, and compare with the alternation theorem.
+5. **Weighted design.** Repeat the minimax comparison with $\delta_p = 0.01$ and
+   $\delta_s = 0.001$, using weights in `remez`. How much shorter than a Kaiser
+   design is it now?
+6. **Phase distortion.** Filter a square wave with the elliptic filter of this
+   chapter and with the FIR filter, both designed to the same specification.
+   Plot both outputs and explain the difference. Then use `filtfilt` and
+   compare again.
+7. **Fixed-point FIR.** Round the coefficients of the Parks–McClellan filter to
+   $B$ bits and measure the stopband attenuation as a function of $B$. Is an FIR
+   filter ever made unstable by rounding? What does rounding do instead?

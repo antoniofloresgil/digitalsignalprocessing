@@ -1,16 +1,417 @@
 # Quantization and A/D–D/A Conversion {#sec-quantization}
 
-Sampling discretises time; quantization discretises amplitude. Together they make a signal digital.
+@sec-sampling dealt with the time axis. This chapter deals with the amplitude
+axis, and with the hardware that crosses between the analog and the digital
+worlds. @sec-what-is-dsp introduced the uniform quantizer, bounded its error
+and proved the 6 dB-per-bit rule for a uniformly distributed input. Here we
+build the model that engineers actually use, quantization error as additive
+white noise, and examine when it holds and when it fails. We then look at
+non-uniform quantization, used in telephony, and at how A/D and D/A
+converters work. The chapter corresponds to Chapter 10 of @prandoni2008.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+By the end of the chapter you should be able to:
+
+- use the additive-noise model of quantization, and recognise the signals for
+  which it fails;
+- derive and measure the SNR of a quantized sinusoid, $6.02B + 1.76$ dB;
+- explain what dither does and why it helps;
+- compare uniform and $\mu$-law quantization over a range of signal levels;
+- describe flash and successive-approximation A/D converters;
+- compute the effect of the zero-order hold in a D/A converter, and design
+  around it.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+rng = np.random.default_rng(12)
+plt.rcParams["figure.figsize"] = (7, 3)
+
+def quantize(x, bits, x_min=-1.0, x_max=1.0):
+    """Uniform quantizer of Definition 1.1 (saturating, mid-rise)."""
+    levels = 2 ** bits
+    step = (x_max - x_min) / levels
+    index = np.clip(np.floor((x - x_min) / step), 0, levels - 1)
+    return x_min + (index + 0.5) * step
+
+def snr_db(x, y):
+    return 10 * np.log10(np.mean(x ** 2) / np.mean((y - x) ** 2))
+```
+
+## The additive-noise model
+
+The quantizer $Q$ of @def-uniform-quantizer is a deterministic, nonlinear
+function. Analysing a nonlinear system is hard; analysing an LTI system plus
+noise is what Parts II and III and @sec-noise are about. The standard model
+replaces the first by the second.
+
+::: {#def-quantization-noise-model}
+## Additive-noise model
+
+The quantized signal is written $Q(x[n]) = x[n] + e[n]$, and the error $e$ is
+modelled as white noise, uniformly distributed on $[-\Delta/2, \Delta/2]$ and
+uncorrelated with $x$. Its power is $\Delta^2/12$ and its PSD is flat,
+$S_e(e^{j\omega}) = \Delta^2/12$.
 :::
 
-## Planned contents
+The model is exact in one case, proved in @prp-six-db-per-bit: for an input
+uniformly distributed over the range, each error sample is exactly uniform.
+In general it is an approximation, which is good when the signal is "busy":
+it crosses many quantization levels in an irregular way and stays within the
+range. It is bad when the signal is simple, such as a low-level or slowly
+changing signal, or a periodic one whose period is commensurate with the
+sampling. Then the error is itself periodic, and instead of noise it produces
+**distortion**: harmonics of the input.
 
-- Uniform quantization and quantization error
-- The 6 dB-per-bit rule, measured
-- Non-uniform quantization and μ-law companding
-- How A/D and D/A converters work
+```{python}
+#| label: fig-quantization-error-spectrum
+#| fig-cap: "Spectrum of the quantization error for a full-scale sinusoid quantized with 8 bits. With frequency $2\\pi\\cdot 50/4096$ (top) the error is periodic and concentrated in harmonics; with an irrational multiple of $2\\pi$ (bottom) it is spread out like white noise, at the level predicted by the model (dashed)."
+N, bits = 4096, 8
+n = np.arange(N)
+Delta = 2 / 2 ** bits
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.6), sharex=True, sharey=True)
+for ax, w0, name in zip(axes, [2 * np.pi * 50 / N, 2 * np.pi * 0.0123456789 * np.sqrt(2)],
+                        ["commensurate frequency", "incommensurate frequency"]):
+    x = 0.999 * np.cos(w0 * n)
+    e = quantize(x, bits) - x
+    P = np.abs(np.fft.rfft(e)) ** 2 / N                  # periodogram, same scale as the PSD
+    ax.semilogy(np.linspace(0, np.pi, len(P)), P, lw=0.5)
+    ax.axhline(Delta ** 2 / 12, color="C3", ls="--", lw=1)
+    ax.set_title(name, fontsize=10)
+axes[1].set_xlabel(r"$\omega$")
+axes[0].set_ylim(1e-12, 1e-2)
+plt.tight_layout()
+plt.show()
+```
+
+With the incommensurate frequency the error behaves as the model says; with the
+commensurate one, the same total error power is concentrated at a few
+frequencies, where it can be audible as harmonic distortion even when the SNR
+is high.
+
+## The SNR of a quantized sinusoid
+
+::: {#prp-snr-sinusoid}
+## $6.02B + 1.76$ dB
+
+Under the additive-noise model, a sinusoid of amplitude $A$ quantized with $B$
+bits on $[-A, A]$ has
+$$
+\mathrm{SNR} = \frac32\,4^B, \qquad \mathrm{SNR}_{\mathrm{dB}} = 6.02\,B + 1.76 .
+$$
+:::
+
+::: {.proof}
+The signal power is $A^2/2$ (@prp-power), the step is $\Delta = 2A/2^B$ and the
+noise power is $\Delta^2/12 = A^2/(3\cdot4^B)$. The ratio is $\frac32 4^B$, and
+$10\log_{10}\frac32 = 1.76$.
+:::
+
+Compared with the uniform input of @prp-six-db-per-bit, a sinusoid spends more
+time near its peaks, so it has more power for the same range: 1.76 dB more. The
+measurement agrees, for frequencies that make the model valid:
+
+```{python}
+n = np.arange(1 << 16)
+x = 0.99999 * np.cos(2 * np.pi * np.sqrt(2) * 0.01 * n)
+print(" bits   measured   6.02B + 1.76")
+for bits in [4, 6, 8, 12, 16]:
+    measured = snr_db(x, quantize(x, bits))
+    predicted = 6.02 * bits + 1.76
+    print(f"{bits:5d}   {measured:7.2f}   {predicted:7.2f}")
+    if bits >= 6:
+        assert abs(measured - predicted) < 0.3
+```
+
+The formula assumes a **full-scale** signal. A sinusoid of amplitude $aA$, with
+$0 < a \le 1$, has power reduced by $a^2$ while the noise stays $\Delta^2/12$, so
+it loses $20\log_{10}(1/a)$ dB: every dB of headroom costs a dB of SNR. Quiet
+passages in music, or a soft voice on the telephone, are quantized much worse
+than loud ones. We return to this below.
+
+## Dither
+
+When the model fails, it can be forced to hold. **Dither** is a small random
+signal added to the input *before* quantization. A classic choice, triangular
+dither with amplitude $\pm\Delta$ (the sum of two independent uniform variables on
+$[-\Delta/2, \Delta/2]$), makes the first two moments of the total error
+independent of the signal [@lipshitz1992]. The error then becomes noise again,
+at the price of a somewhat higher noise floor.
+
+```{python}
+#| label: fig-dither
+#| fig-cap: "A slow, low-level sinusoid (amplitude 1.3 quantization steps) quantized with 8 bits, without (left) and with triangular dither (right). Top: a stretch of the signals; bottom: spectra of the output. Without dither the output is a distorted staircase with strong harmonics; with dither it is the sinusoid plus a flat noise floor."
+N = 1 << 14
+n = np.arange(N)
+bits = 8
+Delta = 2 / 2 ** bits
+x = 1.3 * Delta * np.sin(2 * np.pi * 0.0071 * n)
+dither = rng.uniform(-Delta / 2, Delta / 2, N) + rng.uniform(-Delta / 2, Delta / 2, N)
+outputs = {"no dither": quantize(x, bits), "triangular dither": quantize(x + dither, bits)}
+
+fig, axes = plt.subplots(2, 2, figsize=(7, 4.6), sharey="row")
+for col, (name, y) in enumerate(outputs.items()):
+    axes[0, col].plot(n[:600], y[:600], lw=0.7)
+    axes[0, col].plot(n[:600], x[:600], "k--", lw=0.6)
+    axes[0, col].set_title(name, fontsize=10)
+    spec = np.abs(np.fft.rfft(y * np.hanning(N))) / N
+    axes[1, col].semilogy(np.linspace(0, np.pi, len(spec)), spec + 1e-12, lw=0.5)
+    axes[1, col].set_xlabel(r"$\omega$")
+axes[1, 0].set_ylim(1e-9, 1e-2)
+plt.tight_layout()
+plt.show()
+```
+
+Dither is used in every professional audio converter and when reducing the
+word length of recordings, for example from 24 to 16 bits for a CD.
+
+## Non-uniform quantization: $\mu$-law
+
+Speech has a huge dynamic range: loud and soft talkers, near and far, differ
+by 40 dB or more. A uniform quantizer gives soft signals a poor SNR. The
+solution used by the digital telephone network since the 1970s is to quantize
+**relative** rather than absolute errors: small steps near zero and large steps
+for large amplitudes. It is implemented by compressing the signal with a
+logarithmic curve, quantizing uniformly and expanding after decoding
+(*companding*).
+
+::: {#def-mu-law}
+## $\mu$-law companding
+
+For $|x| \le 1$ and $\mu > 0$, the compressor and expander are
+$$
+C(x) = \operatorname{sign}(x)\,\frac{\ln(1 + \mu|x|)}{\ln(1 + \mu)}, \qquad
+C^{-1}(y) = \operatorname{sign}(y)\,\frac{(1 + \mu)^{|y|} - 1}{\mu},
+$$
+and the $\mu$-law quantizer is $x \mapsto C^{-1}(Q(C(x)))$. North American and
+Japanese telephony use $\mu = 255$ with 8 bits.
+:::
+
+For $\mu|x| \gg 1$, $C(x) \approx \frac{\ln\mu|x|}{\ln(1 + \mu)}$, so a uniform step in
+$C(x)$ is a constant *ratio* in $x$: the relative error, and hence the SNR, is
+nearly independent of the level. We compare it with a uniform 8-bit quantizer,
+and with a uniform 13-bit one, on Laplacian noise, a common model for speech
+samples, over 60 dB of input levels.
+
+```{python}
+#| label: fig-mu-law
+#| fig-cap: "SNR versus input level for a Laplacian signal: uniform quantizers with 8 and 13 bits, and the 8-bit $\\mu$-law quantizer ($\\mu = 255$). The $\\mu$-law SNR stays between about 30 and 38 dB over a range of 40 dB of levels."
+mu = 255
+C = lambda x: np.sign(x) * np.log1p(mu * np.abs(x)) / np.log1p(mu)
+C_inv = lambda y: np.sign(y) * ((1 + mu) ** np.abs(y) - 1) / mu
+mu_law = lambda x, bits: C_inv(quantize(C(x), bits))
+
+levels_db = np.arange(-60, 1, 2)
+speech_like = rng.laplace(size=200_000)
+speech_like /= np.sqrt(np.mean(speech_like ** 2))               # unit power
+
+curves = {"uniform, 8 bits": [], "uniform, 13 bits": [], "mu-law, 8 bits": []}
+for L in levels_db:
+    x = np.clip(10 ** (L / 20) * speech_like / 4, -1, 1)          # rms of 0 dB is 1/4 of full scale
+    curves["uniform, 8 bits"].append(snr_db(x, quantize(x, 8)))
+    curves["uniform, 13 bits"].append(snr_db(x, quantize(x, 13)))
+    curves["mu-law, 8 bits"].append(snr_db(x, mu_law(x, 8)))
+
+fig, ax = plt.subplots()
+for name, snr in curves.items():
+    ax.plot(levels_db, snr, label=name)
+ax.set_xlabel("input level (dB relative to rms = 1/4 of full scale)")
+ax.set_ylabel("SNR (dB)")
+ax.legend()
+plt.show()
+
+flat = np.array(curves["mu-law, 8 bits"])[(levels_db >= -40) & (levels_db <= 0)]
+print(f"mu-law SNR between -40 and 0 dB: from {flat.min():.1f} to {flat.max():.1f} dB")
+```
+
+With 8 bits, the $\mu$-law quantizer matches a 13-bit uniform quantizer for soft
+signals and keeps an almost constant SNR as the level changes, which is what a
+telephone conversation needs. At high levels it is worse than 13 bits, but
+still more than adequate for speech.
+
+## A/D converters
+
+An **analog-to-digital converter** (ADC) samples and quantizes. In front of it
+sits the anti-aliasing filter of @sec-sampling, and a **sample-and-hold** circuit
+that freezes the input voltage while the conversion runs. Two architectures
+illustrate the trade-offs between speed and complexity.
+
+A **flash** converter compares the input simultaneously with the $2^B - 1$
+thresholds between quantization levels, using one comparator per threshold.
+The comparators that answer "above" form a *thermometer code*, which logic
+converts to a binary number. It is the fastest architecture, one comparison
+time per sample, but its size doubles with every bit, so it is used for 6 to 8
+bits at very high rates (oscilloscopes, radar).
+
+A **successive-approximation** (SAR) converter uses a single comparator and a
+D/A converter, and finds the code by **binary search**: it tries the most
+significant bit, keeps it if the D/A output is still below the input, and moves
+to the next bit. After $B$ comparisons the code is the quantizer's interval
+index. It is slower, $B$ steps per sample, but small and accurate, and it is the
+workhorse of microcontrollers and data acquisition.
+
+```{python}
+def sar_adc(v, bits, v_min=-1.0, v_max=1.0):
+    """Successive-approximation conversion: binary search for the interval index."""
+    step = (v_max - v_min) / 2 ** bits
+    code = 0
+    for bit in reversed(range(bits)):
+        trial = code | (1 << bit)
+        if v_min + trial * step <= v:            # comparator: DAC threshold below the input?
+            code = trial
+    return code
+
+x = rng.uniform(-1, 1, 10_000)
+codes = np.array([sar_adc(v, 10) for v in x])
+step = 2 / 2 ** 10
+assert np.allclose(-1 + (codes + 0.5) * step, quantize(x, 10))
+print("SAR conversion equals the uniform quantizer for 10 000 random inputs")
+```
+
+**Sigma-delta** converters, used for audio and precision measurement, take a
+third route: they sample far faster than needed with a quantizer of very few
+bits, sometimes one, and use feedback and filtering to push the quantization
+noise out of the signal band. They are the subject of the last section of
+@sec-multirate.
+
+## D/A converters and the zero-order hold
+
+A **digital-to-analog converter** (DAC) turns each number into a voltage and holds
+it for one sampling period. Its output is the zero-order-hold interpolation of
+@sec-sampling,
+$$
+y(t) = \sum_nx[n]\,I_0\!\left(\frac{t - nT}{T}\right),
+$$
+not the sinc interpolation of the sampling theorem. What does the staircase do
+to the spectrum?
+
+::: {#prp-zoh-spectrum}
+## Spectrum of a zero-order-hold output
+
+The Fourier transform of $I_0(t/T)$, the pulse of height 1 on $[0, T)$, is
+$T\operatorname{sinc}(fT)\,e^{-j\pi fT}$. Consequently, if the samples have DTFT
+$X_d$, the output of a zero-order-hold DAC has
+$$
+Y(f) = T\operatorname{sinc}(fT)\,e^{-j\pi fT}\,X_d(e^{j2\pi fT}).
+$$
+:::
+
+::: {.proof}
+$\int_0^Te^{-j2\pi ft}dt = \frac{1 - e^{-j2\pi fT}}{j2\pi f} = e^{-j\pi fT}\frac{\sin(\pi fT)}{\pi f}$.
+Each term $x[n]I_0((t - nT)/T)$ is the pulse delayed by $nT$, whose transform is
+multiplied by $e^{-j2\pi fnT}$; summing over $n$ (absolutely, for summable $x$)
+gives the DTFT at $\omega = 2\pi fT$.
+:::
+
+The output spectrum is the periodic spectrum of the samples, with copies
+(**images**) around every multiple of $F_s$, shaped by $\operatorname{sinc}(fT)$. Two
+effects follow. Within the band, the sinc causes a **droop**: at $F_s/2$ the
+gain is $\operatorname{sinc}(1/2) = 2/\pi$, or $-3.92$ dB. Outside the band, the images
+are attenuated but not removed, so the DAC must be followed by an analog
+**reconstruction filter**, and the droop can be compensated by a digital
+pre-emphasis filter. We simulate a DAC on a fine grid and measure both effects.
+
+```{python}
+#| label: fig-zoh-dac
+#| fig-cap: "Spectrum of a zero-order-hold DAC output for tones at 1, 2 and 3.5 kHz, $F_s = 8$ kHz. The tones are followed by images around multiples of 8 kHz, all under the $|\\mathrm{sinc}(fT)|$ envelope (dashed); the tones themselves are attenuated by the droop."
+fs, up = 8000, 32                                   # 32 fine points per sample = "continuous" time
+n = np.arange(1 << 12)
+tones = [1000, 2000, 3500]
+x = sum(np.cos(2 * np.pi * f * n / fs) for f in tones)
+y = np.repeat(x, up)                                # zero-order hold
+fine = fs * up
+spec = np.abs(np.fft.rfft(y * np.hanning(len(y)))) / (len(y) / 4)   # tone of amplitude 1 -> height 1
+f = np.fft.rfftfreq(len(y), 1 / fine)
+
+fig, ax = plt.subplots()
+ax.plot(f / 1000, 20 * np.log10(spec + 1e-9), lw=0.6)
+ax.plot(f / 1000, 20 * np.log10(np.abs(np.sinc(f / fs)) + 1e-9), "--", color="C3", lw=1)
+ax.set_xlim(0, 40); ax.set_ylim(-60, 5)
+ax.set_xlabel("frequency (kHz)"); ax.set_ylabel("dB")
+plt.show()
+
+for ft in tones:
+    measured = 20 * np.log10(spec[np.argmin(np.abs(f - ft))])
+    print(f"{ft} Hz: measured {measured:6.2f} dB, predicted {20 * np.log10(np.sinc(ft / fs)):6.2f} dB")
+    assert abs(measured - 20 * np.log10(np.sinc(ft / fs))) < 0.1
+```
+
+Oversampling makes both problems smaller: if the DAC runs at a multiple of the
+signal's sampling rate, the band of interest occupies only the flat beginning of
+the sinc, and the images move far away, where a simple analog filter removes
+them. That is one of the subjects of @sec-multirate.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: hear the difference in numbers
+
+Quantize a quiet sinusoid with and without dither. Change `level_db` and
+`bits`. For which levels does dither make the largest difference to the
+harmonic content?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+bits, level_db = 8, -45
+rng = np.random.default_rng(0)
+N = 1 << 14
+n = np.arange(N)
+D = 2 / 2 ** bits
+x = 10 ** (level_db / 20) * np.sin(2 * np.pi * 0.0071 * n)
+q = lambda v: -1 + (np.clip(np.floor((v + 1) / D), 0, 2 ** bits - 1) + 0.5) * D
+dith = rng.uniform(-D / 2, D / 2, N) + rng.uniform(-D / 2, D / 2, N)
+for y, name in [(q(x), "no dither"), (q(x + dith), "dither")]:
+    s = np.abs(np.fft.rfft(y * np.hanning(N))) / N
+    plt.semilogy(np.linspace(0, np.pi, len(s)), s + 1e-12, lw=0.5, label=name)
+plt.ylim(1e-9, 1e-1); plt.legend(); plt.show()
+```
+:::
+::::
+
+## Summary
+
+- The additive-noise model treats quantization error as white noise, uniform on
+  $[-\Delta/2, \Delta/2]$, of power $\Delta^2/12$ (@def-quantization-noise-model). It
+  holds for busy signals and fails for simple, periodic or low-level ones, which
+  suffer harmonic distortion instead.
+- A full-scale sinusoid quantized with $B$ bits has an SNR of $6.02B + 1.76$ dB
+  (@prp-snr-sinusoid); every dB below full scale loses a dB of SNR.
+- Dither, a small random signal added before quantization, makes the error
+  behave like noise again.
+- $\mu$-law companding keeps the SNR nearly constant over a wide range of levels;
+  8-bit $\mu$-law telephony matches 13-bit uniform quantization for soft signals.
+- Flash ADCs compare against all thresholds at once; SAR ADCs perform a binary
+  search with one comparator.
+- A zero-order-hold DAC multiplies the spectrum by $\operatorname{sinc}(fT)$
+  (@prp-zoh-spectrum): a droop of up to 3.92 dB in band and attenuated images
+  outside it, removed by a reconstruction filter.
+
+## Exercises
+
+1. **Mid-tread quantizer.** The quantizer of @def-uniform-quantizer has no level
+   at 0 (*mid-rise*). Write a *mid-tread* quantizer, with a level at 0, and
+   compare the outputs of both for a signal of amplitude $0.4\Delta$. Which one
+   outputs silence for silence?
+2. **Overload.** For Gaussian inputs of standard deviation $s$ and a $B$-bit
+   quantizer on $[-1, 1]$, write the SNR as a function of $s$ including the
+   overload error, and find the optimal $s$ for $B = 8$ and $B = 16$. This is the
+   "loading factor" used to set the gain in front of an ADC.
+3. **Error of the model.** For a sinusoid with frequency $2\pi k/N$, show that the
+   quantization error is periodic with period $N$. What does that imply for its
+   spectrum?
+4. **Subtractive dither.** If the receiver knows the dither, it can subtract it
+   after quantization. Show by simulation that the error is then uniform and
+   independent of the signal, with power $\Delta^2/12$, and compare with the
+   non-subtractive dither of this chapter.
+5. **A-law.** European telephony uses the A-law,
+   $C(x) = \operatorname{sign}(x)\frac{A|x|}{1 + \ln A}$ for $|x| < 1/A$ and
+   $\operatorname{sign}(x)\frac{1 + \ln(A|x|)}{1 + \ln A}$ otherwise, with $A = 87.6$. Add it
+   to @fig-mu-law and compare.
+6. **Flash converter.** Simulate a 4-bit flash converter whose comparator
+   thresholds have random offsets with standard deviation $0.2\Delta$. Measure its
+   SNR for a full-scale sinusoid and compare with an ideal quantizer.
+7. **Droop compensation.** Design a short FIR filter that compensates the
+   zero-order-hold droop to within $\pm0.1$ dB up to $0.4F_s$, and verify it in the
+   simulation of @fig-zoh-dac.

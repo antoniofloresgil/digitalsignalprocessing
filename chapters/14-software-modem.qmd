@@ -1,18 +1,566 @@
 # Project: A Software Modem {#sec-modem}
 
-The whole book in one project: send bits over a simulated telephone line and get them back.
+This chapter puts the whole book to work. We build a **modem**
+(modulator–demodulator) in software: a transmitter that turns a text message
+into a sound-like signal that fits through a telephone line, a simulated line
+that filters, delays, distorts and adds noise, and a receiver that recovers the
+message. Almost every tool of the previous chapters appears: complex
+exponentials and modulation (@sec-complex-numbers), filters and the matched
+filter (@sec-lti, @sec-filter-design), up-sampling (@sec-multirate), fractional
+delays (@sec-sampling), noise and SNR (@sec-noise), correlation and least squares
+(@sec-signals-as-vectors). The design follows the spirit of Chapter 12 of
+@prandoni2008, with our own choices and code.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+By the end of the chapter you should be able to:
+
+- describe a channel by its bandwidth, power and noise;
+- map bits to QAM symbols and shape them into a band-limited signal without
+  intersymbol interference;
+- modulate the signal to a carrier and demodulate it with a matched filter;
+- derive and measure the bit error rate as a function of $E_b/N_0$;
+- synchronise a receiver to an unknown delay, carrier phase and frequency
+  offset, and decode a message end to end.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal, stats
+
+rng = np.random.default_rng(14)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## The channel
+
+An analog telephone line passes, roughly, the frequencies between 300 and
+3400 Hz, and adds noise. We model it at a sampling rate of $F_s = 8$ kHz as
+
+- a **band-pass filter**, a linear-phase FIR filter with that pass band;
+- an unknown **delay**, not necessarily a whole number of samples;
+- additive white Gaussian **noise**.
+
+The transmitter must respect two constraints: its signal must fit in the band,
+or the line will distort it (the **bandwidth constraint**), and its power is
+limited, so the only way to beat the noise is to use that power wisely (the
+**power constraint**). The receiver, in addition, does not share a clock with
+the transmitter, so its carrier oscillator has an unknown phase and a slightly
+different frequency.
+
+```{python}
+fs = 8000
+h_line = signal.firwin(101, [300, 3400], pass_zero=False, fs=fs)      # telephone band
+
+def fractional_delay(x, d):
+    """Delay x by d samples (any real d) by a linear phase in frequency (@sec-sampling)."""
+    N = len(x)
+    X = np.fft.rfft(x, 2 * N)
+    w = 2 * np.pi * np.fft.rfftfreq(2 * N)
+    return np.fft.irfft(X * np.exp(-1j * w * d), 2 * N)[:N]
+
+def telephone_line(s, delay, noise_var):
+    s = np.r_[np.zeros(200), s, np.zeros(400)]                        # silence around the frame
+    s = fractional_delay(s, delay)
+    s = np.convolve(s, h_line)[: len(s)]
+    return s + rng.normal(0, np.sqrt(noise_var), len(s))
+```
+
+## The transmitter
+
+### From bits to symbols
+
+The transmitter sends one **symbol** every $T = 1/1000$ s, that is, 1000 symbols
+per second (*baud*). Each symbol is a complex number from a finite
+**constellation**; the real and imaginary parts will become the amplitudes of a
+cosine and a sine at the carrier frequency, exactly the pair of
+@sec-complex-numbers. With 4 points (QPSK) each symbol carries 2 bits; with the
+16 points of **16-QAM**, a $4\times4$ grid, it carries 4.
+
+The bits are assigned to the points with a **Gray code**: neighbouring points
+differ in exactly one bit, so the most likely error, choosing a neighbour,
+costs a single bit. The constellations are scaled to average symbol energy
+$E_s = \mathbb{E}[|a|^2] = 1$.
+
+```{python}
+GRAY_LEVELS = np.array([-3, -1, 3, 1])           # 2 bits -> level: 00 -3, 01 -1, 10 +3, 11 +1
+
+def qam16_map(bits):
+    b = bits.reshape(-1, 4).astype(int)            # uint8 arithmetic would wrap around
+    i = GRAY_LEVELS[2 * b[:, 0] + b[:, 1]]
+    q = GRAY_LEVELS[2 * b[:, 2] + b[:, 3]]
+    return (i + 1j * q) / np.sqrt(10)               # mean of i^2 + q^2 is 10
+
+def qam16_demap(z):
+    levels = np.array([-3, -1, 1, 3])
+    bits_of = {-3: (0, 0), -1: (0, 1), 1: (1, 1), 3: (1, 0)}
+    out = []
+    for v in z * np.sqrt(10):                       # nearest level on each axis
+        out += bits_of[levels[np.argmin(abs(levels - v.real))]]
+        out += bits_of[levels[np.argmin(abs(levels - v.imag))]]
+    return np.array(out, dtype=np.uint8)
+
+def qpsk_map(bits):
+    b = bits.reshape(-1, 2).astype(int)
+    return ((2 * b[:, 0] - 1) + 1j * (2 * b[:, 1] - 1)) / np.sqrt(2)
+
+def qpsk_demap(z):
+    return np.column_stack([z.real > 0, z.imag > 0]).astype(np.uint8).ravel()
+
+test = rng.integers(0, 2, 4000).astype(np.uint8)
+assert np.array_equal(qam16_demap(qam16_map(test)), test)
+assert np.isclose(np.mean(np.abs(qam16_map(rng.integers(0, 2, 400_000))) ** 2), 1, atol=0.01)
+```
+
+### Pulse shaping without intersymbol interference
+
+To send symbol $a_k$ at time $kT$, the transmitter emits a **pulse** $g$ scaled by
+$a_k$. With $K = F_s/1000 = 8$ samples per symbol, the baseband signal is
+$$
+s_b[n] = \sum_ka_k\,g[n - kK],
+$$
+which is the up-sampled symbol sequence (@sec-multirate) filtered by $g$. The
+pulse decides the bandwidth: a rectangular pulse is simple but its spectrum
+decays slowly (@sec-spectral-analysis) and would spill out of the band. A
+smooth pulse is band-limited, but long, and then neighbouring pulses overlap.
+Overlap is harmless if, at the instants where the receiver looks, every pulse
+except one is zero.
+
+::: {#prp-nyquist-isi}
+## No intersymbol interference
+
+Let the receiver filter the baseband signal with the matched filter
+$\bar g[n] = g[-n]$ (@thm-matched-filter) and sample at $n = kK$. With
+$p = g * \bar g$, the sample at time $kK$ is
+$$
+(s_b * \bar g)[kK] = \sum_ma_m\,p[(k - m)K],
+$$
+which equals $a_k$ for every symbol sequence if and only if $p[mK] = \delta[m]$.
 :::
 
-## Planned contents
+::: {.proof}
+By linearity and time invariance, $s_b * \bar g = \sum_ma_m\,\mathcal{S}^{mK}p$, whose
+value at $kK$ is the stated sum. It equals $a_k$ for all sequences exactly when
+the coefficient of $a_m$ is $\delta[k - m]$.
+:::
 
-- The channel: bandwidth and power constraints
-- Transmitter: symbols, QAM constellations, pulse shaping, modulation
-- Receiver: demodulation and decision
-- Noise and error probability
-- Synchronisation: carrier and timing recovery
-- Measuring bit error rate end to end
+The condition $p[mK] = \delta[m]$ is the **Nyquist criterion**. The standard
+solution is the **raised-cosine** pulse $p$, with a parameter $\beta \in [0, 1]$, the
+*roll-off*, that sets the bandwidth to $(1 + \beta)/(2T)$ Hz, only a fraction
+$\beta$ more than the minimum $1/(2T)$. Its "square root", the
+**root-raised-cosine** (RRC) pulse $g$, is used at both ends, so that the
+transmitter's pulse and the receiver's matched filter together form $p$. We
+use $\beta = 0.35$, so the signal occupies $\pm675$ Hz around the carrier.
+
+```{python}
+#| label: fig-rrc
+#| fig-cap: "The root-raised-cosine pulse $g$ (left) and the raised-cosine pulse $p = g * \\bar g$ (right), with roll-off 0.35 and 8 samples per symbol. $p$ crosses zero at every multiple of the symbol period (dots), so symbols do not interfere at the sampling instants."
+K, beta, span = 8, 0.35, 8
+
+def rrc_pulse(beta, K, span):
+    """Root-raised-cosine pulse, unit energy, spanning ±span symbols."""
+    t = np.arange(-span * K, span * K + 1) / K                     # time in symbol periods
+    h = np.empty_like(t)
+    for i, ti in enumerate(t):
+        if np.isclose(ti, 0):
+            h[i] = 1 - beta + 4 * beta / np.pi
+        elif np.isclose(abs(ti), 1 / (4 * beta)):
+            h[i] = beta / np.sqrt(2) * ((1 + 2 / np.pi) * np.sin(np.pi / (4 * beta))
+                                        + (1 - 2 / np.pi) * np.cos(np.pi / (4 * beta)))
+        else:
+            h[i] = (np.sin(np.pi * ti * (1 - beta)) + 4 * beta * ti * np.cos(np.pi * ti * (1 + beta))) \
+                   / (np.pi * ti * (1 - (4 * beta * ti) ** 2))
+    return h / np.linalg.norm(h)
+
+g = rrc_pulse(beta, K, span)
+p = np.convolve(g, g[::-1])
+centre = len(p) // 2
+isi = np.abs(np.r_[p[centre - K::-K], p[centre + K::K]]).max()
+print(f"p at 0: {p[centre]:.4f}; largest |p| at other symbol instants: {isi:.1e}")
+assert np.isclose(p[centre], 1) and isi < 3e-3                     # small residue from truncation
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 2.8))
+tg = (np.arange(len(g)) - len(g) // 2) / K
+tp = (np.arange(len(p)) - centre) / K
+ax1.plot(tg, g); ax1.set_xlabel("t / T")
+ax2.plot(tp, p); ax2.plot(tp[centre % K::K], p[centre % K::K], "o", ms=3, color="C3")
+ax2.set_xlim(-6, 6); ax2.set_xlabel("t / T")
+plt.tight_layout()
+plt.show()
+```
+
+### Modulation
+
+The baseband signal $s_b$ is complex and its spectrum is centred on 0 Hz. To
+place it in the middle of the telephone band, the transmitter multiplies it by
+a complex exponential at the carrier frequency $f_c = 1800$ Hz, which shifts
+the spectrum (@prp-dft-properties, modulation), and keeps the real part, which
+is all that a wire can carry:
+$$
+s[n] = \sqrt2\,\operatorname{Re}\!\big(s_b[n]\,e^{j\omega_cn}\big)
+= \sqrt2\big(\operatorname{Re}s_b[n]\cos\omega_cn - \operatorname{Im}s_b[n]\sin\omega_cn\big),
+\qquad \omega_c = 2\pi\frac{f_c}{F_s}.
+$$
+The real and imaginary parts of the symbols ride on a cosine and a sine of the
+same frequency: **quadrature amplitude modulation**. By
+@eq-cos-two-exponentials, the real part contains the spectrum of $s_b$ shifted
+to $+f_c$ and its mirror image at $-f_c$, as every real signal must. The factor
+$\sqrt2$ gives $s$ the same power as $s_b$.
+
+```{python}
+fc = 1800
+wc = 2 * np.pi * fc / fs
+
+def transmit(symbols):
+    up = np.zeros(len(symbols) * K, dtype=complex)
+    up[::K] = symbols                                   # up-sample by K
+    sb = np.convolve(up, g)                             # pulse shaping
+    n = np.arange(len(sb))
+    return np.sqrt(2) * np.real(sb * np.exp(1j * wc * n))
+```
+
+```{python}
+#| label: fig-modem-spectrum
+#| fig-cap: "PSD of the transmitted 16-QAM signal (Welch estimate), inside the telephone band of the line (dashed: magnitude response of the line filter, in dB). The signal occupies $1800 \\pm 675$ Hz."
+symbols = qam16_map(rng.integers(0, 2, 4 * 5000))
+s = transmit(symbols)
+f, P = signal.welch(s, fs=fs, nperseg=1024)
+w_line, H_line = signal.freqz(h_line, worN=f, fs=fs)
+
+fig, ax = plt.subplots()
+ax.plot(f, 10 * np.log10(P / P.max()), label="transmitted signal")
+ax.plot(f, 20 * np.log10(np.abs(H_line) + 1e-9), "--", label="telephone line")
+ax.set_ylim(-80, 5); ax.set_xlabel("frequency (Hz)"); ax.set_ylabel("dB"); ax.legend()
+plt.show()
+print(f"power of the transmitted signal: {np.mean(s ** 2) * K:.3f} per symbol (E_s = 1)")
+```
+
+## The receiver
+
+### Demodulation and matched filtering
+
+The receiver reverses the steps. It multiplies by $\sqrt2e^{-j\omega_cn}$, which
+moves the wanted copy of the spectrum back to 0 Hz and the mirror image to
+$-2f_c = -3600$ Hz, and then applies the matched filter $\bar g$. The matched
+filter is a low-pass filter with a band of $\pm675$ Hz, so it removes the image
+as well; by @prp-nyquist-isi, its output sampled at the symbol instants gives
+back the symbols, plus noise.
+
+```{python}
+def demodulate(r, f_offset=0.0, phase=0.0):
+    """Mix down with the receiver's oscillator (possibly mistuned) and matched-filter."""
+    n = np.arange(len(r))
+    rb = np.sqrt(2) * r * np.exp(-1j * (2 * np.pi * (fc + f_offset) / fs * n + phase))
+    return np.convolve(rb, g[::-1])
+```
+
+A delay of $D$ samples does more than shift the symbols: the carrier arrives
+delayed too, so the baseband signal comes out multiplied by $e^{-j\omega_cD}$, a
+rotation of the constellation. In this section the receiver knows the delay of
+the line (200 samples of leading silence plus 50 of filter delay), and
+compensates both the timing and this rotation; @sec-modem-sync removes that
+knowledge.
+
+How much noise? If the line adds white noise of variance $\sigma^2$, the noise
+after mixing and matched filtering is complex, with independent real and
+imaginary parts of variance $\sigma^2$ each (to a very good approximation, for a
+pulse much longer than the carrier period; Exercise 3). Writing $N_0 = 2\sigma^2$
+for the total noise power per symbol, the symbol-to-noise ratio is $E_s/N_0$,
+and per bit $E_b/N_0$ with $E_b = E_s/\log_2M$ for a constellation of $M$ points. We
+check this with a QPSK frame through a noiseless and a noisy line:
+
+```{python}
+sigma2 = 0.05
+bits = rng.integers(0, 2, 2 * 4000).astype(np.uint8)
+tx_symbols = qpsk_map(bits)
+s = transmit(tx_symbols)
+total_delay = 200 + 50 + 2 * (len(g) // 2)               # silence + line filter + both RRC filters
+line_phase = -wc * (200 + 50)                            # carrier rotation caused by the line delay
+clean = demodulate(telephone_line(s, 0.0, 0.0), phase=line_phase)[total_delay::K][: len(tx_symbols)]
+noisy = demodulate(telephone_line(s, 0.0, sigma2), phase=line_phase)[total_delay::K][: len(tx_symbols)]
+noise = noisy - clean
+print(f"residual ISI and line distortion: {np.sqrt(np.mean(np.abs(clean - tx_symbols) ** 2)):.3f} rms")
+assert np.sqrt(np.mean(np.abs(clean - tx_symbols) ** 2)) < 0.05
+print(f"noise variance per component: real {noise.real.var():.4f}, imag {noise.imag.var():.4f} "
+      f"(sigma^2 = {sigma2})")
+assert np.allclose([noise.real.var(), noise.imag.var()], sigma2, rtol=0.08)
+```
+
+### Eye diagram and decisions
+
+Overlaying many symbol periods of the matched-filter output gives the **eye
+diagram**, a classic oscilloscope view of a link. At the sampling instant the
+traces converge to the constellation levels, and the vertical opening of the
+"eye" shows the margin against noise.
+
+```{python}
+#| label: fig-eye
+#| fig-cap: "Eye diagram of the real part of the matched-filter output for 16-QAM at 25 dB $E_s/N_0$ (left), and the received constellation at the sampling instants (right)."
+symbols = qam16_map(rng.integers(0, 2, 4 * 3000))
+r = telephone_line(transmit(symbols), 0.0, 1 / (2 * 10 ** 2.5))
+y = demodulate(r, phase=line_phase)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3.2), width_ratios=[1.4, 1])
+for k in range(200, 500):
+    seg = y[total_delay + k * K - K: total_delay + k * K + K + 1].real
+    ax1.plot(np.arange(-K, K + 1) / K, seg, color="C0", alpha=0.08)
+ax1.set_xlabel("t / T"); ax1.set_title("eye diagram (real part)", fontsize=10)
+z = y[total_delay::K][: len(symbols)]
+ax2.plot(z.real, z.imag, ".", ms=1.5, alpha=0.5)
+ax2.set_aspect("equal"); ax2.set_title("constellation", fontsize=10)
+plt.tight_layout()
+plt.show()
+```
+
+The receiver decides by choosing the nearest constellation point, which, for
+Gaussian noise and equally likely symbols, is the decision with the smallest
+probability of error. For QPSK the error probability has a closed form.
+
+::: {#prp-qpsk-ber}
+## Bit error rate of QPSK
+
+If the decision variable is $z = a + \nu$, with $a \in \{(\pm1 \pm j)/\sqrt2\}$ and
+$\nu$ complex Gaussian noise whose real and imaginary parts are independent with
+variance $N_0/2$, then each bit is wrong with probability
+$$
+P_b = \mathcal{Q}\left(\sqrt{2E_b/N_0}\right), \qquad E_b = E_s/2 = 1/2 .
+$$
+:::
+
+::: {.proof}
+The two bits are decided independently, from the signs of $\operatorname{Re}z$ and
+$\operatorname{Im}z$. The first is wrong when the real noise has magnitude larger
+than $1/\sqrt2$ and the sign opposite to $\operatorname{Re}a$, with probability
+$\mathcal{Q}\big((1/\sqrt2)/\sqrt{N_0/2}\big) = \mathcal{Q}(\sqrt{1/N_0}) = \mathcal{Q}(\sqrt{2E_b/N_0})$.
+The same holds for the second bit.
+:::
+
+For 16-QAM, a standard approximation, accurate when errors are rare, is
+$P_b \approx \frac34\mathcal{Q}\big(\sqrt{0.8\,E_b/N_0}\big)$ (Exercise 4). We
+measure both through the complete passband chain:
+
+```{python}
+#| label: fig-ber
+#| fig-cap: "Bit error rate versus $E_b/N_0$ through the simulated telephone line, for QPSK and 16-QAM: simulation (dots) and theory (lines). 16-QAM carries twice as many bits per symbol and needs about 4 dB more energy per bit."
+Qf = stats.norm.sf
+
+def measure_ber(mapper, demapper, bits_per_symbol, ebn0_db, n_symbols=40_000):
+    bits = rng.integers(0, 2, bits_per_symbol * n_symbols).astype(np.uint8)
+    noise_var = 1 / (2 * bits_per_symbol * 10 ** (ebn0_db / 10))     # sigma^2 = N0/2, N0 = Es/(bits * Eb/N0)
+    y = demodulate(telephone_line(transmit(mapper(bits)), 0.0, noise_var), phase=line_phase)
+    z = y[total_delay::K][:n_symbols]
+    return np.mean(demapper(z) != bits)
+
+ebn0 = np.arange(0, 13, 2)
+ber_qpsk = [measure_ber(qpsk_map, qpsk_demap, 2, e) for e in ebn0]
+ber_16 = [measure_ber(qam16_map, qam16_demap, 4, e) for e in ebn0]
+theory_qpsk = Qf(np.sqrt(2 * 10 ** (ebn0 / 10)))
+theory_16 = 0.75 * Qf(np.sqrt(0.8 * 10 ** (ebn0 / 10)))
+
+fig, ax = plt.subplots()
+ax.semilogy(ebn0, theory_qpsk, label="QPSK theory"); ax.semilogy(ebn0, ber_qpsk, "o", color="C0")
+ax.semilogy(ebn0, theory_16, label="16-QAM approximation"); ax.semilogy(ebn0, ber_16, "s", color="C1")
+ax.set_xlabel("$E_b/N_0$ (dB)"); ax.set_ylabel("bit error rate"); ax.set_ylim(1e-6, 0.5); ax.legend()
+plt.show()
+
+for e, measured, theory in zip(ebn0, ber_qpsk, theory_qpsk):
+    if theory * 80_000 > 200:                          # enough errors for a meaningful comparison
+        assert abs(measured / theory - 1) < 0.25, (e, measured, theory)
+```
+
+The measurements follow the theory: the line, the pulses and the matched filter
+behave as the model predicts. The remaining work is to make the receiver find
+the right instants and the right carrier phase by itself.
+
+## Synchronisation {#sec-modem-sync}
+
+So far the receiver knew the delay of the line and shared the transmitter's
+oscillator. In reality, the frame arrives at an unknown time, after a delay
+that is not a whole number of samples, and the receiver's oscillator differs
+from the transmitter's by an unknown phase and a small frequency offset. A
+phase error rotates the constellation; a frequency error makes it spin. The
+receiver must estimate all three before it can decide.
+
+### Timing recovery with a preamble
+
+The transmitter starts every frame with a **preamble**: 64 QPSK symbols known to
+the receiver. The receiver correlates the matched-filter output with the
+preamble, up-sampled to the sampling rate, and takes the position of the
+largest magnitude as the start of the frame. This is the delay estimation of
+@sec-signals-as-vectors. Taking the magnitude makes the estimate insensitive to
+the unknown carrier phase, which multiplies the correlation by a complex number
+of modulus one. The resolution is one sample, an eighth of a symbol, which is
+enough here; finer timing can be obtained by interpolating the correlation peak
+(Exercise 6).
+
+### Carrier recovery
+
+At the preamble, the receiver knows the symbols $a_k$, so the phase of
+$z_ka_k^*$ is the phase error at symbol $k$. A phase offset $\theta$ and a
+frequency offset $\Delta\omega$ per symbol make it grow linearly,
+$\theta + \Delta\omega\,k$, plus noise, so a **least-squares line** through the measured
+phases (@prp-least-squares) estimates both. After the preamble, the receiver
+keeps tracking with a **phase-locked loop** (PLL): it rotates each new sample by
+the current phase estimate, decides the symbol, measures the remaining phase
+error $e_k = \arg(z_k\hat a_k^*)$ against the decision, and corrects its phase and
+frequency estimates by small fractions of $e_k$:
+$$
+\phi_{k+1} = \phi_k + f_k + \alpha e_k, \qquad f_{k+1} = f_k + \beta e_k .
+$$
+This second-order loop is itself a small recursive filter acting on the phase
+errors; its gains $\alpha$, $\beta$ set how fast it reacts and how much noise it lets
+through.
+
+```{python}
+def receive(r, preamble, n_symbols, alpha=0.05, beta_pll=0.002, f_offset=0.0, phase=0.0):
+    """Timing by preamble correlation, carrier by least squares and a PLL. Returns equalised symbols."""
+    y = demodulate(r, f_offset, phase)
+    P = len(preamble)
+    template = np.zeros(P * K, dtype=complex); template[::K] = preamble
+    corr = signal.correlate(y, template, mode="valid")
+    start = int(np.argmax(np.abs(corr)))
+    z = y[start::K][:n_symbols]
+
+    k = np.arange(P)
+    slope, intercept = np.polyfit(k, np.unwrap(np.angle(z[:P] * np.conj(preamble))), 1)
+
+    levels = np.array([-3, -1, 1, 3]) / np.sqrt(10)
+    decide = lambda v: levels[np.argmin(abs(levels - v.real))] + 1j * levels[np.argmin(abs(levels - v.imag))]
+    phi, f = intercept, slope
+    out = np.empty(n_symbols, dtype=complex)
+    for i in range(n_symbols):
+        out[i] = z[i] * np.exp(-1j * phi)
+        reference = preamble[i] if i < P else decide(out[i])
+        e = np.angle(out[i] * np.conj(reference))
+        f += beta_pll * e
+        phi += f + alpha * e
+    return out, start, z
+
+preamble = qpsk_map(rng.integers(0, 2, 2 * 64).astype(np.uint8))
+```
+
+## End to end
+
+We transmit a text message followed by 2000 random 16-QAM symbols, through a
+line with a delay of 37.3 samples, a receiver oscillator off by 2 Hz and
+1 radian, and noise at $E_s/N_0 = 25$ dB.
+
+```{python}
+message = "Hello from a software modem! 2026"
+msg_bits = np.unpackbits(np.frombuffer(message.encode("utf-8"), dtype=np.uint8))
+random_bits = rng.integers(0, 2, 4 * 2000).astype(np.uint8)
+payload = np.r_[msg_bits, random_bits]                     # len(msg_bits) is a multiple of 8, hence of 4
+frame = np.r_[preamble, qam16_map(payload)]
+
+r = telephone_line(transmit(frame), delay=37.3, noise_var=1 / (2 * 10 ** 2.5))
+received, start, raw = receive(r, preamble, len(frame), f_offset=2.0, phase=1.0)
+
+decoded_bits = qam16_demap(received[len(preamble):])
+text = np.packbits(decoded_bits[: len(msg_bits)]).tobytes().decode("utf-8", errors="replace")
+errors = np.sum(decoded_bits != payload)
+print(f"frame found at sample {start}")
+print(f"decoded message: {text!r}")
+print(f"bit errors: {errors} out of {len(payload)}")
+assert text == message and errors == 0
+```
+
+```{python}
+#| label: fig-sync
+#| fig-cap: "The received samples of the end-to-end experiment, before carrier recovery (left: the 2 Hz offset makes the constellation spin into rings) and after the least-squares estimate and the PLL (right: the 16 points of the constellation)."
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3.4))
+ax1.plot(raw.real, raw.imag, ".", ms=1.5, alpha=0.5)
+ax1.set_title("before carrier recovery", fontsize=10)
+ax2.plot(received[len(preamble):].real, received[len(preamble):].imag, ".", ms=1.5, alpha=0.5)
+ax2.set_title("after carrier recovery", fontsize=10)
+for ax in (ax1, ax2):
+    ax.set_aspect("equal"); ax.set_xlim(-1.5, 1.5); ax.set_ylim(-1.5, 1.5)
+plt.tight_layout()
+plt.show()
+```
+
+The modem transfers 4000 bits per second through a channel of about 3 kHz,
+with no errors at this noise level. Real voice-band modems reached about ten
+times more, using the same principles plus three refinements that make good
+projects: **adaptive equalisation**, which learns and inverts the distortion
+of the line; **channel coding**, which adds redundancy to correct errors
+[@shannon1948]; and **trellis-coded modulation**, which combines the two
+previous ideas with larger constellations.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: break the receiver
+
+This box runs a compact version of the link at baseband. Lower `esn0_db` until
+symbols are misread, then increase the frequency offset `df` until the PLL loses
+lock even at high SNR. Which parameter of the loop helps?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+rng = np.random.default_rng(0)
+esn0_db, df, alpha, beta = 20, 0.01, 0.05, 0.002          # df in radians per symbol
+levels = np.array([-3, -1, 1, 3]) / np.sqrt(10)
+a = rng.choice(levels, 3000) + 1j * rng.choice(levels, 3000)
+noise = np.sqrt(1 / (2 * 10 ** (esn0_db / 10))) * (rng.normal(size=3000) + 1j * rng.normal(size=3000))
+z = a * np.exp(1j * (0.7 + df * np.arange(3000))) + noise
+
+decide = lambda v: levels[np.argmin(abs(levels - v.real))] + 1j * levels[np.argmin(abs(levels - v.imag))]
+phi, f, out = 0.7, 0.0, []
+for v in z:
+    w = v * np.exp(-1j * phi); out.append(w)
+    e = np.angle(w * np.conj(decide(w)))
+    f += beta * e; phi += f + alpha * e
+out = np.array(out)
+errors = np.sum([decide(o) != s for o, s in zip(out[1000:], a[1000:])])
+plt.plot(out[1000:].real, out[1000:].imag, ".", ms=2)
+plt.gca().set_aspect("equal"); plt.title(f"symbol errors in the last 2000: {errors}")
+plt.show()
+```
+:::
+::::
+
+## Summary
+
+- A channel is characterised by its bandwidth, the power available to the
+  transmitter and its noise. The telephone line passes 300–3400 Hz.
+- Bits become complex symbols from a QAM constellation, with Gray coding.
+  Pulses shaped so that $p = g * \bar g$ satisfies the Nyquist criterion
+  (@prp-nyquist-isi) keep the signal band-limited without intersymbol
+  interference; the root-raised-cosine pulse with roll-off $\beta$ needs a
+  bandwidth of $(1 + \beta)$ times the symbol rate.
+- Quadrature modulation shifts the complex baseband signal to a carrier; the
+  receiver mixes it back and applies the matched filter, which also removes the
+  image at twice the carrier.
+- With nearest-point decisions, QPSK has $P_b = \mathcal{Q}(\sqrt{2E_b/N_0})$
+  (@prp-qpsk-ber); the simulated link follows the theory.
+- A known preamble gives the frame timing by correlation and the carrier phase
+  and frequency by least squares; a phase-locked loop tracks them during the
+  frame.
+
+## Exercises
+
+1. **Bandwidth and roll-off.** Measure the bandwidth containing 99 % of the
+   power of the transmitted signal for $\beta = 0.1, 0.35, 0.7$. How fast could
+   you signal through the 300–3400 Hz band with each?
+2. **The rectangular pulse.** Replace the RRC pulse by a rectangular pulse of
+   one symbol period. Show that the Nyquist criterion still holds, but compare
+   the spectrum with @fig-modem-spectrum. What would the telephone line do to
+   it?
+3. **Noise after demodulation.** Show that the real part of
+   $\sqrt2\,w[m]e^{-j\omega_cm}$, filtered by $\bar g$, has at time $k$ the variance
+   $\sigma^2\sum_mg[m - k]^2\big(1 + \cos(2\omega_cm)\big)$, and explain why the oscillating
+   term is negligible here. Check the claim by simulation for a short pulse.
+4. **16-QAM error rate.** Derive the approximation for 16-QAM by counting, for
+   each point, the neighbours at minimum distance, and using Gray coding. Where
+   is it inaccurate, and why?
+5. **The price of a constellation.** Add 64-QAM to @fig-ber. How many dB more
+   than 16-QAM does it need for $P_b = 10^{-4}$, and how many more bits per
+   symbol does it carry?
+6. **Fine timing.** Make the delay 37.5 samples and measure the BER with and
+   without a correction of the sampling instant by parabolic interpolation of
+   the correlation peak, followed by a fractional delay filter.
+7. **Adaptive equalisation.** Replace the telephone-line filter by one with a
+   noticeable slope across the band, so that intersymbol interference appears.
+   Implement an LMS equaliser, an FIR filter whose coefficients are updated at
+   every symbol by $\mathbf{c} \leftarrow \mathbf{c} + \mu\,e_k\,\overline{\mathbf{z}_k}$ with the
+   decision error $e_k$, train it on the preamble, and compare the constellations
+   before and after.

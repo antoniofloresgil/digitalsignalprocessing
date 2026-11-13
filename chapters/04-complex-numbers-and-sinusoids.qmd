@@ -1,17 +1,572 @@
 # Complex Numbers and Sinusoids {#sec-complex-numbers}
 
-Complex numbers are introduced from zero, as a compact way to describe rotation, amplitude and phase.
+Sinusoids are everywhere in this book, and so far they have been awkward.
+Detecting a note in @sec-signals-as-vectors needed *two* comparisons, with a
+cosine and with a sine, because we did not know the phase. Proving that the
+samples of a cosine average to zero over a period took a telescoping trick.
+Adding two sinusoids of the same frequency requires trigonometric identities
+that nobody remembers.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+Complex numbers remove all three difficulties. A complex number packs an
+amplitude and a phase into one object, multiplication rotates it, and a
+sinusoid becomes the shadow of a point turning around a circle. This chapter
+introduces complex numbers from their definition and builds exactly the tools
+the rest of the book needs: the polar form, the complex exponential and
+Euler's formula, complex exponential signals and the complex inner product.
+
+By the end of the chapter you should be able to:
+
+- calculate with complex numbers in Cartesian and polar form, by hand and in
+  NumPy;
+- state and prove Euler's formula from the power series of the exponential;
+- describe $e^{j\omega n}$ as a rotating point, and explain negative
+  frequencies and the wagon-wheel effect;
+- add sinusoids of the same frequency using phasors;
+- sum a complex exponential over a period, the key computation behind the
+  discrete Fourier transform.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+
+rng = np.random.default_rng(4)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## Complex numbers
+
+::: {#def-complex}
+## Complex numbers
+
+A **complex number** is an ordered pair of real numbers, written
+$z = a + jb$, with **real part** $\operatorname{Re} z = a$ and **imaginary part**
+$\operatorname{Im} z = b$. Sum and product are defined by
+$$
+(a + jb) + (c + jd) = (a + c) + j(b + d), \qquad
+(a + jb)(c + jd) = (ac - bd) + j(ad + bc).
+$$
+The set of complex numbers is $\mathbb{C}$. The real number $a$ is identified
+with $a + j0$, and $j = 0 + j1$.
 :::
 
-## Planned contents
+The product rule is designed so that $j^2 = (0 + j1)(0 + j1) = -1$; everything
+else follows the usual rules of algebra, since sum and product are
+commutative, associative and distributive (a direct check from the
+definition). Engineers write $j$ because $i$ is taken by electric current;
+mathematicians write $i$; Python writes `1j`.
 
-- Complex numbers as points and arrows in the plane
-- Multiplication as rotation and scaling; Euler's formula built up numerically
-- The complex exponential as a rotating point; negative frequencies
-- Digital frequency and why it only goes up to π
-- Aliasing of sinusoids: the wagon-wheel effect
+```{python}
+z, w = 3 + 4j, 1 - 2j
+print(z + w, z * w, z / w, (1j) ** 2)
+```
+
+::: {#def-conjugate-modulus}
+## Conjugate and modulus
+
+The **conjugate** of $z = a + jb$ is $\bar z = a - jb$, and its **modulus** is
+$|z| = \sqrt{a^2 + b^2}$.
+:::
+
+::: {#prp-complex-basics}
+## Basic properties
+
+For all $z, w \in \mathbb{C}$:
+
+1. $z\bar z = |z|^2$; hence, for $z \ne 0$, $1/z = \bar z/|z|^2$.
+2. $\overline{z + w} = \bar z + \bar w$ and $\overline{zw} = \bar z\,\bar w$.
+3. $|zw| = |z|\,|w|$ and $|z + w| \le |z| + |w|$.
+4. $\operatorname{Re} z = (z + \bar z)/2$ and $\operatorname{Im} z = (z - \bar z)/(2j)$.
+:::
+
+::: {.proof}
+(1) $(a + jb)(a - jb) = a^2 + b^2$. (2) Direct from the definitions. (3) By (1)
+and (2), $|zw|^2 = zw\,\overline{zw} = z\bar z\,w\bar w = |z|^2|w|^2$. The
+triangle inequality is the one of $\mathbb{R}^2$ (@sec-signals-as-vectors),
+because $|z|$ is the Euclidean norm of the pair $(a, b)$. (4) Add and subtract
+$z$ and $\bar z$.
+:::
+
+### The complex plane and polar form
+
+Drawing $a + jb$ as the point $(a, b)$ of the plane, $|z|$ is the distance to
+the origin. A nonzero $z$ can therefore be written as
+
+$$
+z = r(\cos\theta + j\sin\theta), \qquad r = |z| > 0,
+$$
+
+where $\theta$, the **argument** of $z$, is the angle from the positive real
+axis to the arrow from 0 to $z$. The argument is defined up to multiples of
+$2\pi$. Its **principal value**, in $(-\pi, \pi]$, is what `np.angle` returns;
+`np.abs` returns the modulus.
+
+::: {#prp-polar-product}
+## Multiplication rotates and scales
+
+If $z = r(\cos\theta + j\sin\theta)$ and $w = s(\cos\phi + j\sin\phi)$, then
+$$
+zw = rs\big(\cos(\theta + \phi) + j\sin(\theta + \phi)\big).
+$$
+:::
+
+::: {.proof}
+Multiply out and use $\cos\theta\cos\phi - \sin\theta\sin\phi = \cos(\theta + \phi)$
+and $\sin\theta\cos\phi + \cos\theta\sin\phi = \sin(\theta + \phi)$.
+:::
+
+So multiplying by $w$ scales every point of the plane by $|w|$ and rotates it
+by the argument of $w$. Multiplying by $j$ is a quarter turn; multiplying by
+a number of modulus 1 is a pure rotation.
+
+```{python}
+#| label: fig-complex-multiplication
+#| fig-cap: "Multiplying by $w = 0.9\\,e^{j40^\\circ}$ scales by 0.9 and rotates by $40^\\circ$. Repeating it turns the point $z = 1$ into a spiral."
+w = 0.9 * (np.cos(np.radians(40)) + 1j * np.sin(np.radians(40)))
+powers = w ** np.arange(12)                     # 1, w, w^2, ...
+
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.plot(powers.real, powers.imag, "o-", lw=0.8)
+for k, p in enumerate(powers[:6]):
+    ax.annotate(f"$w^{k}$", (p.real, p.imag), textcoords="offset points", xytext=(5, 5))
+ax.axhline(0, color="0.8"); ax.axvline(0, color="0.8")
+ax.set_aspect("equal")
+ax.set_xlabel("real part"); ax.set_ylabel("imaginary part")
+plt.show()
+
+assert np.allclose(np.abs(powers), 0.9 ** np.arange(12))
+assert np.allclose(np.angle(powers[1:5]), np.radians(40) * np.arange(1, 5))
+```
+
+## The complex exponential and Euler's formula
+
+Powers of $w$ trace a spiral. If $|w| = 1$ they move around the unit circle in
+equal steps, which is exactly a sinusoid in disguise. To write this neatly we
+need the exponential of a complex number.
+
+::: {#def-complex-exponential}
+## Exponential of a complex number
+
+For $z \in \mathbb{C}$,
+$$
+e^z = \exp(z) = \sum_{k=0}^{\infty}\frac{z^k}{k!} = 1 + z + \frac{z^2}{2} + \frac{z^3}{6} + \cdots
+$$
+:::
+
+The series converges for every $z$: by @prp-complex-basics,
+$|z^k/k!| = |z|^k/k!$, and $\sum_k |z|^k/k! = e^{|z|}$ is finite, so the series
+converges absolutely, and a series of complex numbers that converges absolutely
+converges (apply the real result to real and imaginary parts). For real $z$
+this is the familiar exponential. The rule $e^{z + w} = e^ze^w$ also holds for
+complex numbers; it follows by multiplying the two absolutely convergent series
+term by term and grouping terms of equal total degree with the binomial
+theorem.
+
+::: {#thm-euler}
+## Euler's formula
+
+For every real $\theta$, $e^{j\theta} = \cos\theta + j\sin\theta$.
+:::
+
+::: {.proof}
+The powers of $j$ repeat with period 4: $1, j, -1, -j, \dots$ Splitting the
+series of $e^{j\theta}$ into even and odd $k$ (allowed, since it converges
+absolutely),
+$$
+e^{j\theta} = \sum_{m=0}^{\infty}\frac{(-1)^m\theta^{2m}}{(2m)!}
++ j\sum_{m=0}^{\infty}\frac{(-1)^m\theta^{2m+1}}{(2m+1)!} ,
+$$
+and these are the Taylor series of $\cos\theta$ and $\sin\theta$, which
+converge to them for every real $\theta$.
+:::
+
+We can watch the series converge, and also check a second, more intuitive
+description: $e^{j\theta}$ is the limit of $(1 + j\theta/N)^N$, that is, of $N$
+small steps, each a tiny rotation by about $\theta/N$.
+
+```{python}
+theta = 2.0
+target = np.cos(theta) + 1j * np.sin(theta)
+
+terms = (1j * theta) ** np.arange(20) / np.cumprod(np.r_[1, np.arange(1, 20)])
+partial = np.cumsum(terms)
+print(" terms   |series - (cos θ + j sin θ)|")
+for K in [2, 5, 10, 15, 20]:
+    print(f"{K:6d}   {abs(partial[K - 1] - target):.2e}")
+
+print("\n      N   |(1 + jθ/N)^N - (cos θ + j sin θ)|")
+for N in [10, 100, 1000, 10000]:
+    print(f"{N:7d}   {abs((1 + 1j * theta / N) ** N - target):.2e}")
+
+assert np.isclose(np.exp(1j * theta), target)
+```
+
+The series converges very fast; the product slowly, with an error of order
+$1/N$. Both give the point at angle $\theta$ on the unit circle.
+
+::: {#cor-euler}
+## Consequences of Euler's formula
+
+For real $\theta, \phi$ and integer $n$:
+
+1. $|e^{j\theta}| = 1$, and every complex $z \ne 0$ can be written
+   $z = |z|e^{j\theta}$ (**polar form**);
+2. $e^{j\theta}e^{j\phi} = e^{j(\theta + \phi)}$ and $(e^{j\theta})^n = e^{jn\theta}$;
+3. $e^{j\theta} = 1$ if and only if $\theta$ is a multiple of $2\pi$;
+4. $\displaystyle\cos\theta = \frac{e^{j\theta} + e^{-j\theta}}{2}$ and
+   $\displaystyle\sin\theta = \frac{e^{j\theta} - e^{-j\theta}}{2j}$.
+:::
+
+::: {.proof}
+(1) $\cos^2\theta + \sin^2\theta = 1$, and $z = |z|(\cos\theta + j\sin\theta)$.
+(2) Is $e^{z+w} = e^ze^w$; the power follows by induction (and $e^{-j\theta}$ is
+the inverse). (3) $\cos\theta = 1$ and $\sin\theta = 0$ exactly at multiples of
+$2\pi$. (4) Add and subtract $e^{j\theta} = \cos\theta + j\sin\theta$ and
+$e^{-j\theta} = \cos\theta - j\sin\theta$.
+:::
+
+Item 2 is @prp-polar-product in one line, and it turns trigonometry into
+algebra. For instance, comparing real parts in
+$e^{j(a + b)} = e^{ja}e^{jb}$ gives $\cos(a + b) = \cos a\cos b - \sin a\sin b$
+with no memorisation at all.
+
+## Complex exponential signals
+
+::: {#def-complex-exponential-signal}
+## Complex exponential signal
+
+For $A > 0$ and real $\omega, \varphi$, the **complex exponential signal** is
+$$
+x[n] = A\,e^{j(\omega n + \varphi)} = \big(Ae^{j\varphi}\big)\,e^{j\omega n},
+\qquad n \in \mathbb{Z}.
+$$
+The complex number $Ae^{j\varphi}$, which holds amplitude and phase together,
+is its **phasor**.
+:::
+
+By Euler's formula its real and imaginary parts are the real sinusoids
+$A\cos(\omega n + \varphi)$ and $A\sin(\omega n + \varphi)$. Geometrically,
+$x[n]$ is a point on the circle of radius $A$, which advances by the angle
+$\omega$ at each step: counterclockwise if $\omega > 0$, **clockwise if
+$\omega < 0$**. A negative frequency is not a mystery, just a rotation in the
+other direction. The real sinusoid is the sum of both directions, by
+@cor-euler (4):
+
+$$
+A\cos(\omega n + \varphi) = \frac{A}{2}e^{j\varphi}e^{j\omega n} + \frac{A}{2}e^{-j\varphi}e^{-j\omega n}.
+$$ {#eq-cos-two-exponentials}
+
+Two points turning in opposite directions at the same speed, with conjugate
+positions, always add up to a real number: the vertical components cancel.
+This is why the spectrum of every real signal, in @sec-dft, contains each
+frequency twice, at $+\omega$ and at $-\omega$.
+
+```{python}
+#| label: fig-rotating-exponentials
+#| fig-cap: "The first 8 samples of $e^{j\\omega n}$ (dots, numbered) and of $e^{-j\\omega n}$ (crosses) for $\\omega = \\pi/6$, on the unit circle (left). Their average is $\\cos(\\omega n)$, a real number (right)."
+omega = np.pi / 6
+n = np.arange(8)
+pos, neg = np.exp(1j * omega * n), np.exp(-1j * omega * n)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3.4))
+circle = np.exp(1j * np.linspace(0, 2 * np.pi, 200))
+ax1.plot(circle.real, circle.imag, color="0.85")
+ax1.plot(pos.real, pos.imag, "o", label=r"$e^{j\omega n}$")
+ax1.plot(neg.real, neg.imag, "x", label=r"$e^{-j\omega n}$")
+for k in range(8):
+    ax1.annotate(str(k), (pos[k].real, pos[k].imag), textcoords="offset points", xytext=(4, 4), fontsize=8)
+ax1.plot((pos + neg).real / 2, np.zeros(8), "s", ms=4, color="C3", label="average")
+ax1.set_aspect("equal"); ax1.legend(fontsize=8, loc="lower left")
+ax2.stem(n, ((pos + neg) / 2).real, basefmt=" ")
+ax2.set_title(r"$\cos(\omega n)$", fontsize=10)
+plt.tight_layout()
+plt.show()
+
+assert np.allclose((pos + neg) / 2, np.cos(omega * n))
+```
+
+### Which frequencies are different?
+
+For complex exponentials the question of @sec-discrete-time-signals has a
+cleaner answer.
+
+::: {#prp-complex-frequency-equivalence}
+## Equal complex exponentials
+
+$e^{j\omega_1 n} = e^{j\omega_2 n}$ for every $n \in \mathbb{Z}$ if and only if
+$\omega_1 - \omega_2$ is a multiple of $2\pi$. Consequently, the distinct complex
+exponential signals are exactly those with $\omega \in [-\pi, \pi)$.
+:::
+
+::: {.proof}
+If $\omega_1 - \omega_2 = 2\pi k$, then $e^{j\omega_1 n} = e^{j\omega_2 n}e^{j2\pi kn} = e^{j\omega_2n}$.
+Conversely, taking $n = 1$ gives $e^{j(\omega_1 - \omega_2)} = 1$, so
+$\omega_1 - \omega_2 \in 2\pi\mathbb{Z}$ by @cor-euler (3). Every real number
+differs from exactly one number of $[-\pi, \pi)$ by a multiple of $2\pi$.
+:::
+
+Compare with real sinusoids, where $\omega$ and $-\omega$ give the same signal
+(up to the sign of the phase), so that $[0, \pi]$ was enough: a real cosine
+cannot tell which way it rotates. A complex exponential can, and needs the full
+interval $[-\pi, \pi)$.
+
+### The wagon-wheel effect
+
+A film shows a wheel at 24 frames per second. If the wheel turns by an angle
+$\theta$ between two frames, a marked point on its rim moves along
+$e^{j\theta n}$, where $n$ counts frames. By
+@prp-complex-frequency-equivalence the viewer cannot distinguish $\theta$ from
+the unique angle in $[-\pi, \pi)$ that differs from it by a multiple of $2\pi$,
+and the brain picks the smallest motion compatible with the frames. If the
+wheel has $S$ identical spokes, a rotation by $2\pi/S$ looks like no rotation
+at all, so the apparent step is $\theta$ reduced modulo $2\pi/S$ into
+$[-\pi/S, \pi/S)$.
+
+```{python}
+#| label: fig-wagon-wheel
+#| fig-cap: "Apparent rotation speed of a wheel with 5 spokes and 60 cm diameter, filmed at 24 frames per second, as the car speeds up. The wheel seems to stand still at the speeds where it turns by exactly one spoke between frames, and to turn backwards just below them."
+fps, spokes, diameter = 24, 5, 0.6
+
+def apparent_step(theta, symmetry):
+    """Reduce an angle per frame to the interval [-pi/symmetry, pi/symmetry)."""
+    period = 2 * np.pi / symmetry
+    return (theta + period / 2) % period - period / 2
+
+speed_kmh = np.linspace(0, 60, 2000)
+true_step = (speed_kmh / 3.6) / (diameter / 2) / fps             # radians per frame
+seen_step = apparent_step(true_step, spokes)
+
+fig, ax = plt.subplots()
+ax.plot(speed_kmh, true_step * fps / (2 * np.pi), "--", color="0.6", label="true")
+ax.plot(speed_kmh, seen_step * fps / (2 * np.pi), label="seen on film")
+ax.axhline(0, color="0.8")
+ax.set_xlabel("car speed (km/h)"); ax.set_ylabel("revolutions per second")
+ax.legend()
+plt.show()
+
+stop = (2 * np.pi / spokes) * fps * (diameter / 2) * 3.6           # first speed with a full spoke step
+print(f"the wheel appears to stand still at {stop:.1f} km/h")
+```
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: the wheel on film
+
+Draw the wheel as it appears in consecutive frames. Choose `step_deg`, the true
+rotation between frames, and the number of `spokes`. Which values make the
+wheel seem to turn backwards? Which make it stand still?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+step_deg, spokes = 68, 5
+fig, axes = plt.subplots(1, 5, figsize=(9, 2))
+for frame, ax in enumerate(axes):
+    angles = np.radians(step_deg * frame) + 2 * np.pi * np.arange(spokes) / spokes
+    for a in angles:
+        ax.plot([0, np.cos(a)], [0, np.sin(a)], color="0.4")
+    ax.plot(np.cos(angles[0]), np.sin(angles[0]), "o", color="C3")   # one marked spoke
+    ax.set_xlim(-1.1, 1.1); ax.set_ylim(-1.1, 1.1); ax.set_aspect("equal"); ax.axis("off")
+    ax.set_title(f"frame {frame}", fontsize=8)
+plt.show()
+```
+:::
+::::
+
+## Phasors: adding sinusoids by adding numbers
+
+::: {#prp-phasor-sum}
+## Sum of sinusoids of the same frequency
+
+For amplitudes $A_k > 0$, phases $\varphi_k$ and a common frequency $\omega$,
+$$
+\sum_{k=1}^{K} A_k\cos(\omega n + \varphi_k) = A\cos(\omega n + \varphi),
+\qquad\text{where}\quad Ae^{j\varphi} = \sum_{k=1}^{K}A_ke^{j\varphi_k},
+$$
+provided the right-hand sum is not zero (if it is, the left-hand side is
+identically zero).
+:::
+
+::: {.proof}
+$A_k\cos(\omega n + \varphi_k) = \operatorname{Re}\big(A_ke^{j\varphi_k}e^{j\omega n}\big)$,
+and $\operatorname{Re}$ is additive, so the sum is
+$\operatorname{Re}\big((\sum_k A_ke^{j\varphi_k})e^{j\omega n}\big) = \operatorname{Re}(Ae^{j\varphi}e^{j\omega n})$.
+:::
+
+A sum of sinusoids of one frequency is again a sinusoid of that frequency, and
+its phasor is the sum of the phasors: adding arrows replaces trigonometric
+identities. A practical case: two loudspeakers play the same 1 kHz tone, and a
+listener receives one directly and the other with a delay of 0.4 ms and 70 %
+of the amplitude. The delay is a phase shift of $2\pi \cdot 1000 \cdot 0.0004$
+radians.
+
+```{python}
+f, fs = 1000.0, 48_000
+n = np.arange(96)
+phasor_1 = 1.0
+phasor_2 = 0.7 * np.exp(-1j * 2 * np.pi * f * 0.0004)      # delayed copy
+total = phasor_1 + phasor_2
+
+direct = np.cos(2 * np.pi * f * n / fs) + 0.7 * np.cos(2 * np.pi * f * (n / fs - 0.0004))
+predicted = abs(total) * np.cos(2 * np.pi * f * n / fs + np.angle(total))
+assert np.allclose(direct, predicted)
+print(f"resulting amplitude {abs(total):.3f} (between {1 - 0.7:.1f} and {1 + 0.7:.1f}), "
+      f"phase {np.degrees(np.angle(total)):.1f}°")
+```
+
+The amplitude depends on the delay. When the phase shift is an odd multiple of
+$\pi$ the arrows point in opposite directions and the sound almost cancels;
+this is the principle of noise-cancelling headphones.
+
+## Sums over a period: the geometric series
+
+The most important computation of Part II is the sum of a complex exponential
+over a whole number of periods. With complex numbers, it is a geometric
+series.
+
+::: {#prp-sum-of-roots}
+## Sum of a complex exponential over a period
+
+For integers $N \geq 1$ and $k$,
+$$
+\sum_{n=0}^{N-1} e^{j2\pi kn/N} =
+\begin{cases} N & \text{if } N \text{ divides } k, \\ 0 & \text{otherwise.}\end{cases}
+$$
+:::
+
+::: {.proof}
+Let $w = e^{j2\pi k/N}$, so that the terms are $w^n$. If $N$ divides $k$, then
+$w = 1$ by @cor-euler (3) and the sum is $N$. Otherwise $w \ne 1$, and the
+geometric series formula, valid for complex numbers by the same algebra as for
+real ones, gives
+$$
+\sum_{n=0}^{N-1}w^n = \frac{1 - w^N}{1 - w} = \frac{1 - e^{j2\pi k}}{1 - w} = 0 .
+$$
+:::
+
+Taking real parts, and multiplying by $e^{j\varphi}$ first, gives back
+@prp-full-period-average from @sec-what-is-dsp in two lines instead of a
+telescoping argument. Geometrically, the $N$ numbers $w^n$ are equally spaced
+around the unit circle (they are the $N$-th roots of unity when $k = 1$), so
+they balance around the origin.
+
+```{python}
+#| label: fig-roots-of-unity
+#| fig-cap: "The terms $e^{j2\\pi kn/N}$, $n = 0, \\dots, 7$, for $N = 8$ and $k = 1, 3, 8$. In the first two cases they are evenly spread around the circle and add up to zero; for $k = 8$ all terms equal 1."
+N = 8
+fig, axes = plt.subplots(1, 3, figsize=(7, 2.6))
+for ax, k in zip(axes, [1, 3, 8]):
+    terms = np.exp(1j * 2 * np.pi * k * np.arange(N) / N)
+    ax.plot(circle.real, circle.imag, color="0.85")
+    for t in terms:
+        ax.annotate("", xy=(t.real, t.imag), xytext=(0, 0), arrowprops=dict(arrowstyle="->", lw=0.8))
+    ax.set_title(f"k = {k}: sum = {terms.sum().real:.0f}", fontsize=10)
+    ax.set_xlim(-1.2, 1.2); ax.set_ylim(-1.2, 1.2); ax.set_aspect("equal"); ax.axis("off")
+plt.tight_layout()
+plt.show()
+
+for k in range(-20, 21):
+    total = np.exp(1j * 2 * np.pi * k * np.arange(N) / N).sum()
+    assert np.isclose(total, N if k % N == 0 else 0, atol=1e-9)
+```
+
+## Complex vectors and the complex inner product
+
+Signals with complex values need one change in the geometry of
+@sec-signals-as-vectors. The length of a complex number is $|z| = \sqrt{z\bar z}$,
+not $\sqrt{z^2}$, so the inner product must conjugate one argument.
+
+::: {#def-complex-inner-product}
+## Inner product in $\mathbb{C}^N$
+
+For $\mathbf{x}, \mathbf{y} \in \mathbb{C}^N$,
+$\langle\mathbf{x},\mathbf{y}\rangle = \sum_{n=0}^{N-1}x[n]\,\overline{y[n]}$ and
+$\|\mathbf{x}\| = \sqrt{\langle\mathbf{x},\mathbf{x}\rangle} = \big(\sum_n|x[n]|^2\big)^{1/2}$.
+:::
+
+It is linear in the first argument, satisfies
+$\langle\mathbf{y},\mathbf{x}\rangle = \overline{\langle\mathbf{x},\mathbf{y}\rangle}$
+and $\langle\mathbf{x},\mathbf{x}\rangle > 0$ for $\mathbf{x} \ne \mathbf{0}$. Every
+result of @sec-signals-as-vectors carries over: Cauchy–Schwarz (in the proof,
+choose $t = \langle\mathbf{x},\mathbf{y}\rangle/\|\mathbf{y}\|^2$ and expand with
+conjugates), Pythagoras, orthonormal expansions with coefficients
+$\alpha_k = \langle\mathbf{x},\mathbf{e}_k\rangle$, Parseval
+$\|\mathbf{x}\|^2 = \sum_k|\alpha_k|^2$ and projections. Orthogonal matrices
+become **unitary** matrices, with $B^{-1} = B^{\mathsf H}$, the conjugate
+transpose.
+
+In NumPy, `np.vdot(a, b)` conjugates its *first* argument, so
+$\langle\mathbf{x},\mathbf{y}\rangle$ is `np.vdot(y, x)`, or explicitly
+`np.sum(x * np.conj(y))`.
+
+With this inner product, the note detector of @sec-signals-as-vectors needs a
+single comparison per note: the inner product of the recording with
+$e^{j2\pi fn/F_s}$ has modulus independent of the unknown phase, because a phase
+change multiplies the inner product by a number of modulus one.
+
+```{python}
+fs = 8000
+n = np.arange(400)
+notes = {"C": 261.63, "D": 293.66, "E": 329.63, "F": 349.23,
+         "G": 392.00, "A": 440.00, "B": 493.88}
+recording = 0.3 * np.cos(2 * np.pi * notes["G"] * n / fs + 1.1) + rng.normal(0, 0.5, n.size)
+
+def complex_similarity(x, f):
+    e = np.exp(1j * 2 * np.pi * f * n / fs)
+    return abs(np.vdot(e, x)) / (np.linalg.norm(x) * np.linalg.norm(e))
+
+scores = {name: complex_similarity(recording, f) for name, f in notes.items()}
+print("  ".join(f"{k}: {v:.3f}" for k, v in scores.items()))
+assert max(scores, key=scores.get) == "G"
+```
+
+Measuring the inner product of a signal with complex exponentials of many
+frequencies at once is the discrete Fourier transform, the subject of the
+next chapter.
+
+## Summary
+
+- Complex numbers are pairs of reals with the product of @def-complex. In
+  polar form $z = |z|e^{j\theta}$, and multiplication multiplies moduli and adds
+  arguments.
+- The exponential series converges for every complex number, and
+  $e^{j\theta} = \cos\theta + j\sin\theta$ (@thm-euler). Cosine and sine are
+  averages of $e^{\pm j\theta}$.
+- $Ae^{j(\omega n + \varphi)}$ is a point rotating on a circle. Negative frequency
+  means clockwise rotation; a real sinusoid is the sum of two opposite
+  rotations (@eq-cos-two-exponentials).
+- Complex exponentials are equal exactly when their frequencies differ by a
+  multiple of $2\pi$ (@prp-complex-frequency-equivalence). The wagon-wheel
+  effect is this equivalence seen on film.
+- Sinusoids of one frequency add like their phasors (@prp-phasor-sum).
+- $\sum_{n=0}^{N-1}e^{j2\pi kn/N}$ is $N$ or $0$ (@prp-sum-of-roots).
+- Complex vectors use $\langle\mathbf{x},\mathbf{y}\rangle = \sum x[n]\overline{y[n]}$,
+  and all the geometry of @sec-signals-as-vectors carries over.
+
+## Exercises
+
+1. **By hand, then by machine.** Compute $(2 - 3j)(1 + j)$, $1/(1 + j)$,
+   $|3 + 4j|$ and the principal argument of $-1 - j$. Write $-1 - j$ and $j$ in
+   polar form, and check every result with NumPy.
+2. **Roots of unity.** Show that the solutions of $z^N = 1$ are exactly
+   $e^{j2\pi k/N}$, $k = 0, \dots, N-1$. Deduce @prp-sum-of-roots for $k = 1$
+   from the factorisation $z^N - 1 = \prod_k (z - e^{j2\pi k/N})$ by comparing
+   coefficients.
+3. **Trigonometry without memory.** Use $e^{j3\theta} = (e^{j\theta})^3$ to express
+   $\cos 3\theta$ and $\sin 3\theta$ in terms of $\cos\theta$ and $\sin\theta$.
+4. **Product of sinusoids.** Show that
+   $\cos(\omega_1 n)\cos(\omega_2 n) = \frac12[\cos((\omega_1 - \omega_2)n) + \cos((\omega_1 + \omega_2)n)]$
+   using @cor-euler. Plot the product for $\omega_1 = 0.5$, $\omega_2 = 0.45$
+   and explain the *beats* you see.
+5. **Wagon wheel.** For the wheel of @fig-wagon-wheel, find all speeds below
+   100 km/h at which the wheel seems to stand still, and the speed at which it
+   seems to turn backwards fastest. Repeat for a wheel with 6 spokes.
+6. **Phasor cancellation.** Two sources emit the same tone of frequency $f$; one
+   reaches the listener with delay $\tau$ and relative amplitude $\rho \le 1$.
+   Show that the amplitude heard is $\sqrt{1 + \rho^2 + 2\rho\cos(2\pi f\tau)}$.
+   For $\tau = 0.4$ ms, which frequencies below 5 kHz are attenuated most?
+7. **Complex Cauchy–Schwarz.** Write out the proof of Cauchy–Schwarz for
+   $\mathbb{C}^N$ in full, paying attention to the conjugates.
+8. **An exponential's energy.** For complex $a$ with $|a| < 1$, compute the
+   energy of $a^nu[n]$ and the inner product $\langle a^nu[n], b^nu[n]\rangle$ for
+   $|b| < 1$. Check both numerically.

@@ -1,19 +1,563 @@
 # LTI Systems and Convolution {#sec-lti}
 
-Filters are systems that are linear and time-invariant. Such a system is fully described by its response to a single impulse.
+A **system** takes a signal and returns another one: a smoother that removes
+noise from sensor readings, an equaliser that boosts the bass of a song, the
+echo of a room, a telephone line. Most of the systems that signal processing
+designs or models share two properties: they are **linear** and
+**time-invariant** (LTI). These two properties alone force a system to act by
+**convolution** with a single signal, its impulse response, and to act on
+every complex exponential by simple multiplication. That is why the Fourier
+analysis of Part II is the natural language for filters.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+The chapter follows Chapter 5 of @prandoni2008. It defines LTI systems, derives
+the convolution sum, studies causality and stability, introduces two classic
+smoothers and the frequency response, and ends with two applications:
+continuous-time convolution as the limit of the discrete sum, and the matched
+filter for detecting a known pulse.
+
+By the end of the chapter you should be able to:
+
+- test whether a system is linear and time-invariant, and give
+  counterexamples;
+- compute the output of an LTI system by convolution, and prove the basic
+  properties of convolution;
+- decide causality and BIBO stability from the impulse response;
+- implement the moving average and the leaky integrator, recursively and by
+  convolution;
+- compute and measure a frequency response, and use the convolution theorem;
+- design a matched filter and explain why it is optimal.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+rng = np.random.default_rng(7)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## Linear time-invariant systems
+
+::: {#def-lti}
+## Linear, time-invariant and LTI systems
+
+A **system** is an operator $\mathcal{T}$ that maps signals to signals. It is
+
+- **linear** if $\mathcal{T}(\alpha x + \beta y) = \alpha\,\mathcal{T}x + \beta\,\mathcal{T}y$ for
+  all signals $x, y$ and constants $\alpha, \beta$;
+- **time-invariant** if it commutes with shifts: $\mathcal{T}\mathcal{S}^k = \mathcal{S}^k\mathcal{T}$
+  for every integer $k$, that is, delaying the input delays the output by the
+  same amount and changes nothing else;
+- **LTI** if it is both.
 :::
 
-## Planned contents
+The definition can be tested numerically. A failed test is a proof that the
+property does not hold; a passed test on random inputs is only evidence. We
+represent systems as Python functions on arrays, with the convention that the
+arrays hold samples $0, \dots, L-1$ of signals that are zero before $n = 0$, and
+compare outputs after the delay and away from the end of the array, where
+truncation would make the comparison meaningless.
 
-- Linearity and time invariance, with counterexamples
-- The impulse response and the convolution sum
-- FIR and IIR filters, causality and stability
-- Two smoothers: the moving average and the leaky integrator
-- The frequency response; the convolution theorem
-- Convolution in continuous time, as the limit of the discrete sum (intuition only)
-- Correlation revisited: matched filtering
+```{python}
+def is_linear(system, L=200, trials=5):
+    for _ in range(trials):
+        x, y = rng.normal(size=L), rng.normal(size=L)
+        a, b = rng.normal(size=2)
+        if not np.allclose(system(a * x + b * y), a * system(x) + b * system(y)):
+            return False
+    return True
+
+def is_time_invariant(system, L=200, k=7, trials=5):
+    for _ in range(trials):
+        x = rng.normal(size=L)
+        delayed_in = np.r_[np.zeros(k), x[:-k]]                 # S^k x, truncated to L samples
+        delayed_out = np.r_[np.zeros(k), system(x)[:-k]]        # S^k T x
+        if not np.allclose(system(delayed_in)[k: L - 10], delayed_out[k: L - 10]):
+            return False
+    return True
+
+n = np.arange(200)
+systems = {
+    "3-point average  y[n] = (x[n]+x[n-1]+x[n-2])/3": lambda x: np.convolve(x, np.ones(3) / 3)[: len(x)],
+    "square           y[n] = x[n]^2":                 lambda x: x ** 2,
+    "offset           y[n] = x[n] + 1":               lambda x: x + 1,
+    "ramp gain        y[n] = n x[n]":                 lambda x: np.arange(len(x)) * x,
+    "down-sample      y[n] = x[2n]":                  lambda x: np.r_[x[::2], np.zeros(len(x) - len(x[::2]))],
+}
+for name, T in systems.items():
+    print(f"{name}   linear: {is_linear(T)!s:5}  time-invariant: {is_time_invariant(T)}")
+```
+
+Squaring and adding an offset break linearity, although both are
+time-invariant; a gain that depends on time, and down-sampling
+(@sec-discrete-time-signals, Exercise 3), break time invariance. Only the
+average is LTI.
+
+## The impulse response and convolution
+
+::: {#def-impulse-response}
+## Impulse response
+
+The **impulse response** of a system $\mathcal{T}$ is $h = \mathcal{T}\delta$.
+:::
+
+::: {#thm-convolution}
+## LTI systems compute convolutions
+
+Let $\mathcal{T}$ be LTI with impulse response $h$. For every input $x$ with finite
+support,
+$$
+(\mathcal{T}x)[n] = \sum_{k=-\infty}^{\infty} x[k]\,h[n - k] = (x * h)[n],
+$$
+where the sum has finitely many nonzero terms.
+:::
+
+::: {.proof}
+By the reproducing formula (@prp-reproducing-formula),
+$x = \sum_k x[k]\,\mathcal{S}^k\delta$, a finite sum. Linearity and time invariance
+give $\mathcal{T}x = \sum_k x[k]\,\mathcal{T}\mathcal{S}^k\delta = \sum_k x[k]\,\mathcal{S}^k\mathcal{T}\delta = \sum_k x[k]\,\mathcal{S}^kh$,
+whose value at $n$ is $\sum_k x[k]h[n - k]$.
+:::
+
+For inputs of infinite support the same formula is taken as the *definition*
+of the system's output, whenever the series converges. Every LTI system met in
+practice satisfies it, and from now on an **LTI filter** means the operator
+$x \mapsto x * h$ for a given $h$. (Linearity alone only controls finite sums;
+extending the result to infinite sums needs a continuity assumption, which is
+built into this definition.)
+
+::: {#prp-convolution-properties}
+## Properties of convolution
+
+Whenever the sums converge absolutely:
+
+1. $x * h = h * x$ (commutativity);
+2. $(x * h) * g = x * (h * g)$ (associativity): two filters in cascade are one
+   filter, with impulse response $h * g$;
+3. $x * (h + g) = x * h + x * g$ (distributivity): filters in parallel add
+   their impulse responses;
+4. $x * \delta = x$ and $x * \mathcal{S}^k\delta = \mathcal{S}^kx$: the identity and the
+   delay are LTI filters.
+:::
+
+::: {.proof}
+(1) Substitute $m = n - k$ in $\sum_k x[k]h[n - k]$. (2) Both sides equal
+$\sum_k\sum_m x[k]h[m]g[n - k - m]$; absolute convergence allows the order of
+summation to be changed. (3) Linearity of the sum. (4) Only the term $k = n$
+(respectively $k = n - k_0$) survives.
+:::
+
+Commutativity says the roles of signal and filter are interchangeable: the
+output is the input weighted by the impulse response, or equally the impulse
+response weighted by the input. For finite arrays, `np.convolve` computes the
+sum over all $n$ where it can be nonzero (@sec-dft).
+
+## Causality and stability
+
+::: {#def-causal-stable}
+## Causal and BIBO-stable systems
+
+A system is **causal** if the output at time $n$ depends only on inputs at
+times $\le n$: whenever $x_1[m] = x_2[m]$ for all $m \le n$, then
+$(\mathcal{T}x_1)[n] = (\mathcal{T}x_2)[n]$. It is **BIBO-stable** (bounded input,
+bounded output) if every bounded input gives a bounded output.
+:::
+
+::: {#prp-causality}
+## Causality of a filter
+
+The filter $x \mapsto x * h$ is causal if and only if $h[n] = 0$ for every $n < 0$.
+:::
+
+::: {.proof}
+If $h[n] = 0$ for $n < 0$, then $(x * h)[n] = \sum_{k \le n}x[k]h[n - k]$ involves
+only $x[k]$ with $k \le n$. Conversely, suppose $h[m] \ne 0$ for some $m < 0$. The
+inputs $x_1 = 0$ and $x_2 = \mathcal{S}^{-m}\delta$, an impulse at time $-m > 0$, agree at
+all times $\le 0$. But $(x_2 * h)[0] = h[0 - (-m)]$, by @prp-convolution-properties (4),
+which is $h[m] \ne 0 = (x_1 * h)[0]$.
+:::
+
+Causality matters for real-time processing, where the future input is not yet
+available. Offline, for a recorded signal, non-causal filters are perfectly
+usable.
+
+::: {#thm-bibo}
+## BIBO stability
+
+The filter $x \mapsto x * h$ is BIBO-stable if and only if $h$ is absolutely
+summable. In that case $|(x * h)[n]| \le \big(\sup_m|x[m]|\big)\sum_k|h[k]|$.
+:::
+
+::: {.proof}
+If $\sum_k|h[k]| = S < \infty$ and $|x[m]| \le B$ for all $m$, then
+$|\sum_kh[k]x[n - k]| \le B\,S$ for every $n$. Conversely, suppose
+$\sum_k|h[k]| = \infty$. For a real $h$, take the bounded input
+$x[m] = \operatorname{sign}(h[-m])$ (with $\operatorname{sign}0 = 0$). Then
+$(x * h)[0] = \sum_kh[k]x[-k] = \sum_k|h[k]| = \infty$: the output is not even
+defined at $n = 0$. (Truncating this input to $|m| \le M$ gives bounded inputs
+whose outputs at $n = 0$ grow without bound, if one prefers finite inputs. For
+complex $h$, use $x[m] = \overline{h[-m]}/|h[-m]|$.)
+:::
+
+Absolute summability, met in @prp-summability, is therefore the stability
+condition. A filter with finitely many nonzero $h[n]$, a **finite impulse
+response** (FIR) filter, is always stable. A filter with infinitely many, an
+**infinite impulse response** (IIR) filter, may or may not be.
+
+## Two smoothers
+
+### The moving average
+
+The $M$-point **moving average** replaces each sample by the mean of the last
+$M$:
+$$
+y[n] = \frac1M\sum_{k=0}^{M-1}x[n - k], \qquad h[n] = \frac1M \text{ for } 0 \le n \le M-1, \ 0 \text{ otherwise}.
+$$
+It is FIR, causal and stable. Averaging $M$ independent noise samples of
+variance $\sigma^2$ gives variance $\sigma^2/M$, so it reduces noise; it also blurs
+fast changes of the signal over $M$ samples.
+
+### The leaky integrator
+
+Keeping $M$ past samples costs memory. A cheaper smoother keeps only its own
+last output, and moves it a fraction of the way towards each new input:
+$$
+y[n] = \lambda\,y[n - 1] + (1 - \lambda)\,x[n], \qquad 0 < \lambda < 1,
+$$ {#eq-leaky-integrator}
+starting from $y[n] = 0$ before the first input. This is a **recursive**
+filter: its output depends on its past outputs.
+
+::: {#prp-leaky-integrator}
+## Impulse response of the leaky integrator
+
+With zero initial state, @eq-leaky-integrator is the LTI filter with impulse
+response $h[n] = (1 - \lambda)\lambda^nu[n]$, which is IIR, causal and, for
+$|\lambda| < 1$, stable, with $\sum_n h[n] = 1$.
+:::
+
+::: {.proof}
+Feeding $x = \delta$: $y[n] = 0$ for $n < 0$, $y[0] = 1 - \lambda$ and
+$y[n] = \lambda y[n - 1]$ for $n > 0$, so $y[n] = (1 - \lambda)\lambda^n$. The
+recursion is linear and has constant coefficients, so it is LTI; for an input
+of finite support starting at $n_0$, induction on $n$ shows that its output
+equals $x * h$. The geometric series gives $\sum_n|h[n]| = (1 - \lambda)/(1 - \lambda) = 1$.
+:::
+
+The leaky integrator needs one multiplication-and-add per sample, whatever the
+length of its memory, which is about $1/(1 - \lambda)$ samples. A recursion of
+this kind is a **difference equation**; `scipy.signal.lfilter(b, a, x)` runs it,
+with `b` the coefficients of the inputs and `a` those of the outputs
+(@sec-z-transform).
+
+```{python}
+#| label: fig-smoothers
+#| fig-cap: "Noisy daily readings of a slowly varying quantity (grey), smoothed by a 15-point moving average and by a leaky integrator with $\\lambda = 0.9$. Both reduce the noise; both lag behind the signal."
+days = np.arange(365)
+clean = 10 + 8 * np.sin(2 * np.pi * (days - 100) / 365) + 2 * (days > 200)
+noisy = clean + rng.normal(0, 2, days.size)
+
+M, lam = 15, 0.9
+moving = np.convolve(noisy, np.ones(M) / M)[: days.size]
+leaky = signal.lfilter([1 - lam], [1, -lam], noisy)
+
+# the recursion and the convolution with the (truncated) impulse response agree
+h_leaky = (1 - lam) * lam ** np.arange(400)
+assert np.allclose(leaky, np.convolve(noisy, h_leaky)[: days.size])
+
+fig, ax = plt.subplots()
+ax.plot(days, noisy, color="0.75", lw=0.8, label="readings")
+ax.plot(days, moving, label=f"moving average, M = {M}")
+ax.plot(days, leaky, label=r"leaky integrator, $\lambda$ = 0.9")
+ax.plot(days, clean, "k--", lw=0.8, label="clean signal")
+ax.set_xlabel("day"); ax.legend(fontsize=8)
+plt.show()
+
+for name, y in [("moving average", moving), ("leaky integrator", leaky)]:
+    print(f"{name:17s}: noise std after smoothing {np.std((y - clean)[60:200]):.2f} (before: 2.00)")
+```
+
+## The frequency response
+
+Feed a complex exponential to an LTI filter:
+$$
+(h * e^{j\omega\cdot})[n] = \sum_kh[k]e^{j\omega(n - k)} = \Big(\sum_kh[k]e^{-j\omega k}\Big)e^{j\omega n}.
+$$
+The output is the *same* exponential, multiplied by a number that depends only
+on $\omega$.
+
+::: {#thm-eigenfunctions}
+## Complex exponentials are eigenfunctions of LTI filters
+
+Let $h$ be absolutely summable and let $H(e^{j\omega})$ be its DTFT, the
+**frequency response** of the filter. Then for every real $\omega$,
+$h * e^{j\omega n} = H(e^{j\omega})\,e^{j\omega n}$. If $h$ is real, then for every
+$A > 0$ and $\varphi$,
+$$
+h * A\cos(\omega n + \varphi) = A\,|H(e^{j\omega})|\cos\big(\omega n + \varphi + \arg H(e^{j\omega})\big).
+$$
+:::
+
+::: {.proof}
+The first statement is the computation above; the series converges absolutely
+because $h$ is absolutely summable. For real $h$,
+$H(e^{-j\omega}) = \overline{H(e^{j\omega})}$; write the cosine as in
+@eq-cos-two-exponentials, apply the first statement to each exponential and
+add: the two terms are complex conjugates, and their sum is twice the real part
+of $\frac A2e^{j\varphi}H(e^{j\omega})e^{j\omega n}$.
+:::
+
+A sinusoid goes through an LTI filter unchanged in frequency. Its amplitude is
+multiplied by the **magnitude response** $|H(e^{j\omega})|$ and its phase is
+shifted by the **phase response** $\arg H(e^{j\omega})$. This is what "filter"
+means: each frequency is scaled by its own factor. By linearity, the response
+to any sum of sinusoids is the sum of the scaled sinusoids, and the inversion
+formula of the DTFT makes this exact for every absolutely summable input:
+
+::: {#thm-convolution-theorem}
+## Convolution theorem
+
+If $x$ and $h$ are absolutely summable, then so is $y = x * h$, and
+$Y(e^{j\omega}) = H(e^{j\omega})\,X(e^{j\omega})$.
+:::
+
+::: {.proof}
+$\sum_n\sum_k|x[k]||h[n - k]| = \sum_k|x[k]|\sum_m|h[m]| < \infty$, so $y$ is absolutely
+summable and the double series
+$\sum_n\sum_kx[k]h[n - k]e^{-j\omega n}$ converges absolutely. Writing
+$e^{-j\omega n} = e^{-j\omega k}e^{-j\omega(n - k)}$ and summing first over $n$ gives
+$\sum_kx[k]e^{-j\omega k}H(e^{j\omega}) = X(e^{j\omega})H(e^{j\omega})$.
+:::
+
+Convolution in time is multiplication in frequency. @thm-circular-convolution
+was the same statement for the DFT.
+
+### The two smoothers in frequency
+
+From @exm-dtft-pulse-exponential, the moving average has
+$H(e^{j\omega}) = \frac1Me^{-j\omega(M-1)/2}\frac{\sin(\omega M/2)}{\sin(\omega/2)}$, and the
+leaky integrator $H(e^{j\omega}) = \frac{1 - \lambda}{1 - \lambda e^{-j\omega}}$. Both
+equal 1 at $\omega = 0$, letting constant signals through unchanged, and are
+smaller at high frequencies: they are **low-pass** filters. We measure the
+magnitude response by feeding sinusoids and comparing output and input
+amplitudes once the transient has died out, exactly as one would with a signal
+generator and an oscilloscope:
+
+```{python}
+#| label: fig-frequency-response
+#| fig-cap: "Magnitude responses of the 15-point moving average and of the leaky integrator with $\\lambda = 0.9$: formulas (lines) and measurements with sinusoidal inputs (dots)."
+omega = np.linspace(1e-3, np.pi, 500)
+H_ma = np.abs(np.sin(omega * M / 2) / (M * np.sin(omega / 2)))
+H_li = np.abs((1 - lam) / (1 - lam * np.exp(-1j * omega)))
+
+def measured_gain(filter_fn, w, L=3000):
+    n = np.arange(L)
+    y = filter_fn(np.cos(w * n + 0.3))
+    steady = y[L // 2:]                                     # skip the transient
+    return np.sqrt(2 * np.mean(steady ** 2))                # amplitude from the power A^2/2
+
+w_test = np.linspace(0.05, 3.1, 25)
+g_ma = [measured_gain(lambda x: np.convolve(x, np.ones(M) / M)[: len(x)], w) for w in w_test]
+g_li = [measured_gain(lambda x: signal.lfilter([1 - lam], [1, -lam], x), w) for w in w_test]
+
+fig, ax = plt.subplots()
+ax.plot(omega, H_ma, label="moving average"); ax.plot(w_test, g_ma, ".", color="C0")
+ax.plot(omega, H_li, label="leaky integrator"); ax.plot(w_test, g_li, ".", color="C1")
+ax.set_xlabel(r"$\omega$"); ax.set_ylabel(r"$|H(e^{j\omega})|$"); ax.legend()
+plt.show()
+
+assert np.allclose(g_li, np.abs((1 - lam) / (1 - lam * np.exp(-1j * w_test))), atol=2e-3)
+```
+
+The moving average has zeros: sinusoids that complete a whole number of cycles
+in $M$ samples are removed completely, which is how a 7-day average removes a
+weekly pattern exactly. Its phase response, $-\omega(M - 1)/2$, is linear: every
+frequency is delayed by the same $(M-1)/2$ samples, so the shape of the signal
+is preserved, only delayed. The leaky integrator has no zeros and a nonlinear
+phase. These are the first examples of the design questions of
+@sec-filter-design.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: removing a weekly pattern
+
+Daily sales with a weekly pattern and a slow trend. Change `M` and watch the
+weekly pattern disappear exactly when `M` is a multiple of 7, as the zeros of
+the moving average predict.
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+M = 7
+days = np.arange(120)
+sales = 100 + 0.5 * days + 20 * np.cos(2 * np.pi * days / 7) + 10 * np.sin(4 * np.pi * days / 7)
+smooth = np.convolve(sales, np.ones(M) / M, mode="valid")
+
+plt.plot(days, sales, color="0.7", label="sales")
+plt.plot(days[M - 1:], smooth, label=f"{M}-day average")
+plt.legend()
+plt.show()
+```
+:::
+::::
+
+## Convolution in continuous time
+
+Continuous-time LTI systems, such as electric circuits, are described the same
+way, with an integral in place of the sum:
+$$
+y(t) = (x * h)(t) = \int_{-\infty}^{\infty}x(\tau)\,h(t - \tau)\,d\tau .
+$$
+The integral is the limit of the convolution sum of samples. Sampling $x$ and
+$h$ with step $\Delta$, the Riemann sum
+$y(t) \approx \Delta\sum_kx(k\Delta)h(t - k\Delta)$ is $\Delta$ times a discrete
+convolution. For an RC low-pass circuit, the impulse response is
+$h(t) = \frac1{RC}e^{-t/RC}u(t)$, and the response to a unit step is
+$1 - e^{-t/RC}$ for $t \ge 0$. The discrete approximation converges as $\Delta \to 0$:
+
+```{python}
+RC, t_end = 1e-3, 5e-3
+print("   Δ (s)     max error")
+errors = []
+for dt in [1e-4, 1e-5, 1e-6]:
+    t = np.arange(0, t_end, dt)
+    h = np.exp(-t / RC) / RC
+    x = np.ones_like(t)                                     # unit step
+    y = dt * np.convolve(x, h)[: t.size]
+    errors.append(np.abs(y - (1 - np.exp(-t / RC))).max())
+    print(f"{dt:9.0e}   {errors[-1]:.2e}")
+assert errors[2] < errors[1] < errors[0]
+```
+
+The error decreases in proportion to $\Delta$, as for any Riemann sum of a smooth
+function. The leaky integrator is precisely this discretisation, with
+$\lambda = e^{-\Delta/RC}$: digital filters can imitate analog ones, a theme that
+returns in @sec-filter-design and @sec-sampling.
+
+## Correlation revisited: the matched filter
+
+@sec-signals-as-vectors found a known pattern $s$ in a noisy signal by
+cross-correlation. Cross-correlation is a convolution with the reversed
+pattern: $r_{rs}[k] = \sum_nr[n + k]s[n] = (r * h)[k + L - 1]$ with
+$h[n] = s[L - 1 - n]$, $0 \le n \le L-1$. A filter whose impulse response is the
+reversed pattern is a **matched filter**. It is the best possible linear
+detector in white noise:
+
+::: {#thm-matched-filter}
+## Matched filter
+
+Let $r[n] = s[n] + w[n]$, where $s$ is a known signal supported on
+$[0, L-1]$ and the $w[n]$ are independent random variables with mean 0 and
+variance $\sigma^2$. Among all FIR filters $h$ supported on $[0, L-1]$, the
+ratio between the squared signal part and the noise variance of the output at
+time $L - 1$,
+$$
+\mathrm{SNR}_{\mathrm{out}} = \frac{\big|(s * h)[L-1]\big|^2}{\operatorname{Var}\big((w * h)[L-1]\big)},
+$$
+is at most $\|s\|^2/\sigma^2$, with equality if and only if $h[n] = c\,s[L - 1 - n]$ for
+some constant $c \ne 0$.
+:::
+
+::: {.proof}
+$(w * h)[L-1] = \sum_kh[k]w[L - 1 - k]$ is a sum of independent terms, so its
+variance is $\sigma^2\sum_kh[k]^2 = \sigma^2\|h\|^2$. The signal part is
+$\sum_kh[k]s[L - 1 - k] = \langle h, \tilde s\rangle$, where $\tilde s[k] = s[L - 1 - k]$
+has the same norm as $s$. By Cauchy–Schwarz (@thm-cauchy-schwarz),
+$\langle h, \tilde s\rangle^2 \le \|h\|^2\|s\|^2$, with equality exactly when
+$h = c\tilde s$. Dividing by $\sigma^2\|h\|^2$ gives the result.
+:::
+
+The best SNR depends on the energy of the pulse, not on its shape. We compare
+the matched filter with a moving average of the same length, for a sequence of
+pulses of a known shape:
+
+```{python}
+#| label: fig-matched-filter
+#| fig-cap: "Five pulses in strong noise (top). The output of a moving average of the same length (middle) and of the matched filter (bottom). The dashed lines mark the pulse positions; only the matched filter shows clear peaks."
+L = 32
+pulse = np.sin(np.pi * np.arange(L) / L) * np.cos(2 * np.pi * 0.2 * np.arange(L))
+positions = [100, 300, 450, 700, 850]
+r = rng.normal(0, 1.0, 1000)
+for p in positions:
+    r[p:p + L] += 0.8 * pulse
+
+h_matched = pulse[::-1]
+outputs = {"moving average": np.convolve(r, np.ones(L) / L)[: r.size],
+           "matched filter": np.convolve(r, h_matched)[: r.size]}
+
+fig, axes = plt.subplots(3, 1, figsize=(7, 5.5), sharex=True)
+axes[0].plot(r, lw=0.6); axes[0].set_title("received", fontsize=10)
+for ax, (name, y) in zip(axes[1:], outputs.items()):
+    ax.plot(y, lw=0.8); ax.set_title(name, fontsize=10)
+    for p in positions:
+        ax.axvline(p + L - 1, color="C3", ls="--", lw=0.7)
+plt.tight_layout()
+plt.show()
+
+def output_snr(h, trials=2000):
+    """Empirical SNR at the pulse end: signal part squared over noise variance."""
+    signal_part = np.convolve(pulse, h)[L - 1]
+    noise = np.array([np.convolve(rng.normal(size=L), h)[L - 1] for _ in range(trials)])
+    return signal_part ** 2 / noise.var()
+
+snr_ma, snr_mf = output_snr(np.ones(L) / L), output_snr(h_matched)
+print(f"output SNR: moving average {snr_ma:.2f}, matched filter {snr_mf:.2f}, "
+      f"bound ||s||^2/σ^2 = {np.sum(pulse**2):.2f}")
+assert snr_mf > 5 * snr_ma
+```
+
+The moving average does even worse than one might expect: this pulse
+oscillates and its samples add up to almost zero, so averaging removes it
+together with the noise. The matched filter reaches the bound of the theorem,
+up to the statistical error of the simulation.
+
+Receivers in radar, sonar and digital communications all start with a matched
+filter, and @sec-modem will build one.
+
+## Summary
+
+- A system is LTI if it is linear and commutes with shifts. Numerical tests can
+  refute these properties; counterexamples are easy to build
+  (@def-lti).
+- An LTI system is determined by its impulse response $h = \mathcal{T}\delta$ and
+  computes $x * h$ (@thm-convolution). Convolution is commutative, associative
+  and distributive (@prp-convolution-properties).
+- A filter is causal if and only if $h[n] = 0$ for $n < 0$
+  (@prp-causality), and BIBO-stable if and only if $h$ is absolutely
+  summable (@thm-bibo). FIR filters are always stable.
+- The moving average (FIR) and the leaky integrator (IIR, recursive) are
+  low-pass smoothers (@prp-leaky-integrator).
+- Complex exponentials pass through LTI filters scaled by the frequency
+  response $H(e^{j\omega})$ (@thm-eigenfunctions), and convolution becomes
+  multiplication of DTFTs (@thm-convolution-theorem).
+- Continuous-time convolution is the limit of discrete convolution of samples.
+- The matched filter, the reversed pulse, maximises the output SNR in white
+  noise (@thm-matched-filter).
+
+## Exercises
+
+1. **More counterexamples.** Decide whether each system is linear,
+   time-invariant, causal and stable, and prove it:
+   (a) $y[n] = x[n] - x[n - 1]$; (b) $y[n] = x[-n]$; (c) $y[n] = \cos(x[n])$;
+   (d) $y[n] = \sum_{k=-\infty}^{n}x[k]$; (e) $y[n] = \operatorname{median}(x[n-1], x[n], x[n+1])$.
+   Check your answers with `is_linear` and `is_time_invariant`.
+2. **Convolution by hand.** Compute $x * h$ for $x = (1, 2, 3)$ and
+   $h = (1, -1)$ (both starting at $n = 0$), and for $x = u$ and $h = a^nu[n]$ with
+   $|a| < 1$. Check numerically.
+3. **The accumulator is unstable.** Show that the accumulator of
+   @sec-discrete-time-signals is LTI with $h = u$, and find a bounded input with
+   an unbounded output. Why does the leaky integrator not suffer from this?
+4. **Cascades.** Two 3-point moving averages in cascade form one filter. Find
+   its impulse response and its frequency response, and compare it with a single
+   5-point average.
+5. **Phase and delay.** Feed a 15-point moving average with a sum of two
+   sinusoids of different frequencies and verify that both are delayed by 7
+   samples. Repeat with the leaky integrator and measure the delay of each
+   sinusoid from the phase response.
+6. **Matching the RC circuit.** Show that the leaky integrator with
+   $\lambda = e^{-\Delta/RC}$ and the Riemann-sum discretisation of the RC circuit
+   have impulse responses that differ only by a constant factor. Which factor?
+7. **Matched filter for a chirp.** Repeat the matched-filter experiment with a
+   chirp pulse and with a rectangular pulse of equal energy. Do the output SNRs
+   differ? Do the shapes of the output peaks? Relate your answer to
+   @thm-matched-filter and to Exercise 8 of @sec-signals-as-vectors.

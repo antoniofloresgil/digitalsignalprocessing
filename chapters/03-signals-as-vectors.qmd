@@ -1,18 +1,634 @@
 # Signals as Vectors {#sec-signals-as-vectors}
 
-A finite signal is a vector, so ideas from geometry (length, angle, projection) apply directly to signals.
+A finite-length signal of $N$ samples is a list of $N$ numbers, that is, a
+vector in $\mathbb{R}^N$. This observation is more than a change of name. It
+brings the whole of Euclidean geometry, lengths, angles, perpendicular
+directions and projections, into signal processing. Energy becomes squared
+length. Similarity becomes an angle. Approximating a signal becomes finding the
+closest point in a plane. And the Fourier transform, the subject of Part II,
+becomes a change of coordinates.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+This chapter develops that geometry. It follows the spirit of Chapter 3 of
+@prandoni2008, which builds it in the general setting of Hilbert spaces; here
+we stay in $\mathbb{R}^N$ and use the infinite-dimensional case only where
+the book needs it.
+
+By the end of the chapter you should be able to:
+
+- compute inner products, norms and angles between signals, and prove the
+  Cauchy–Schwarz inequality;
+- use orthonormal bases, compute coefficients and apply Parseval's identity;
+- find the best approximation of a signal in a subspace, with and without an
+  orthonormal basis;
+- write a change of basis as a matrix product;
+- use cross-correlation to find a known pattern and measure a delay, and
+  autocorrelation to find a period.
+
+All signals in this chapter are real. @sec-complex-numbers introduces complex
+numbers, and @sec-dft extends every definition here to complex vectors; the
+only change is a complex conjugate in the inner product.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import fft, signal
+
+rng = np.random.default_rng(3)
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## Inner product, norm and angle
+
+::: {#def-inner-product}
+## Inner product, norm and distance
+
+For $\mathbf{x}, \mathbf{y} \in \mathbb{R}^N$, with components $x[n]$ and $y[n]$,
+$n = 0, \dots, N-1$:
+
+- the **inner product** is $\langle \mathbf{x}, \mathbf{y}\rangle = \sum_{n=0}^{N-1} x[n]\,y[n]$;
+- the **norm** is $\|\mathbf{x}\| = \sqrt{\langle \mathbf{x}, \mathbf{x}\rangle}$;
+- the **distance** between $\mathbf{x}$ and $\mathbf{y}$ is $\|\mathbf{x} - \mathbf{y}\|$.
 :::
 
-## Planned contents
+The inner product is symmetric, linear in each argument, and
+$\langle \mathbf{x}, \mathbf{x}\rangle > 0$ unless $\mathbf{x} = \mathbf{0}$.
+Comparing with @def-energy-power, the energy of a finite signal is its squared
+norm, $E_x = \|\mathbf{x}\|^2$, and the squared distance between two signals is
+the energy of their difference. The **mean squared error** used everywhere in
+engineering, $\frac1N\|\mathbf{x} - \mathbf{y}\|^2$, is a squared distance
+divided by the length.
 
-- Vectors in 2D and 3D as a warm-up
-- Inner product as a measure of similarity; norm as energy
-- Orthogonal signals and bases
-- Projection and the best approximation of a signal
-- Change of basis as a matrix product, preparing the ground for the DFT
-- Cross-correlation and autocorrelation as sliding inner products: finding a known pattern and measuring a delay
+In NumPy the inner product of real arrays is `x @ y` (or `np.dot(x, y)`) and
+the norm is `np.linalg.norm(x)`.
+
+::: {#thm-cauchy-schwarz}
+## Cauchy–Schwarz inequality
+
+For all $\mathbf{x}, \mathbf{y} \in \mathbb{R}^N$,
+$|\langle\mathbf{x}, \mathbf{y}\rangle| \le \|\mathbf{x}\|\,\|\mathbf{y}\|$, with
+equality if and only if one of the vectors is a multiple of the other.
+:::
+
+::: {.proof}
+If $\mathbf{y} = \mathbf{0}$ both sides are zero. Otherwise, for every real $t$,
+$$
+0 \le \|\mathbf{x} - t\mathbf{y}\|^2 = \|\mathbf{x}\|^2 - 2t\langle\mathbf{x},\mathbf{y}\rangle + t^2\|\mathbf{y}\|^2 .
+$$
+Choosing $t = \langle\mathbf{x},\mathbf{y}\rangle/\|\mathbf{y}\|^2$ gives
+$0 \le \|\mathbf{x}\|^2 - \langle\mathbf{x},\mathbf{y}\rangle^2/\|\mathbf{y}\|^2$,
+which is the inequality. Equality holds exactly when
+$\|\mathbf{x} - t\mathbf{y}\| = 0$, that is, $\mathbf{x} = t\mathbf{y}$.
+:::
+
+Two consequences follow at once. The **triangle inequality**
+$\|\mathbf{x} + \mathbf{y}\| \le \|\mathbf{x}\| + \|\mathbf{y}\|$ follows by expanding
+$\|\mathbf{x} + \mathbf{y}\|^2$ and bounding the cross term. And for nonzero
+vectors the number
+
+$$
+\cos\theta = \frac{\langle\mathbf{x},\mathbf{y}\rangle}{\|\mathbf{x}\|\,\|\mathbf{y}\|} \in [-1, 1]
+$$
+
+defines the **angle** $\theta$ between them. In data science it is called the
+**cosine similarity**. It is 1 when one signal is a positive multiple of the
+other, $-1$ when it is a negative multiple, and 0 when they are
+**orthogonal**. Unlike the distance, it does not depend on the loudness of
+either signal.
+
+### A first application: which note is playing?
+
+A microphone records 50 ms of a note at $F_s = 8$ kHz, buried in noise. We
+compare the recording with ideal tones of the seven notes of a C-major scale,
+using the cosine similarity. Since a tone may start at any point of its cycle,
+we compare with both a cosine and a sine at each frequency and combine the
+two; @sec-complex-numbers will show that this pair is really one complex
+exponential.
+
+```{python}
+fs = 8000
+n = np.arange(400)                                   # 50 ms
+notes = {"C": 261.63, "D": 293.66, "E": 329.63, "F": 349.23,
+         "G": 392.00, "A": 440.00, "B": 493.88}
+
+recording = 0.3 * np.cos(2 * np.pi * notes["G"] * n / fs + 1.1) + rng.normal(0, 0.5, n.size)
+
+def similarity(x, y):
+    return (x @ y) / (np.linalg.norm(x) * np.linalg.norm(y))
+
+print("note   similarity")
+scores = {}
+for name, f in notes.items():
+    c = np.cos(2 * np.pi * f * n / fs)
+    s = np.sin(2 * np.pi * f * n / fs)
+    scores[name] = np.hypot(similarity(recording, c), similarity(recording, s))
+    print(f"  {name}    {scores[name]:.3f}")
+
+assert max(scores, key=scores.get) == "G"
+```
+
+The noise has more than four times the energy of the tone, so the recording
+looks like noise to the eye. The similarity with G is still about three times
+larger than with any other note. The reason is geometric: noise points in
+"random" directions, which in a space of 400 dimensions are almost orthogonal
+to any fixed vector (Exercise 2).
+
+## Orthogonality and bases
+
+::: {#def-orthonormal}
+## Orthogonal and orthonormal sets
+
+Vectors $\mathbf{x}, \mathbf{y}$ are **orthogonal**, written
+$\mathbf{x} \perp \mathbf{y}$, if $\langle\mathbf{x},\mathbf{y}\rangle = 0$. A set
+$\{\mathbf{e}_0, \dots, \mathbf{e}_{K-1}\}$ is **orthonormal** if
+$\langle\mathbf{e}_j,\mathbf{e}_k\rangle = 1$ when $j = k$ and $0$ otherwise. An
+orthonormal set with $N$ elements in $\mathbb{R}^N$ is an **orthonormal basis**.
+:::
+
+::: {#prp-pythagoras}
+## Pythagoras
+
+If $\mathbf{x} \perp \mathbf{y}$, then $\|\mathbf{x} + \mathbf{y}\|^2 = \|\mathbf{x}\|^2 + \|\mathbf{y}\|^2$.
+:::
+
+::: {.proof}
+$\|\mathbf{x} + \mathbf{y}\|^2 = \|\mathbf{x}\|^2 + 2\langle\mathbf{x},\mathbf{y}\rangle + \|\mathbf{y}\|^2$,
+and the middle term is zero.
+:::
+
+The even–odd decomposition of @prp-even-odd was an instance: $x_e \perp x_o$,
+so their energies add.
+
+::: {#thm-orthonormal-expansion}
+## Expansion in an orthonormal basis
+
+Let $\{\mathbf{e}_0, \dots, \mathbf{e}_{N-1}\}$ be an orthonormal basis of
+$\mathbb{R}^N$. Then every $\mathbf{x} \in \mathbb{R}^N$ satisfies
+
+$$
+\mathbf{x} = \sum_{k=0}^{N-1} \alpha_k\, \mathbf{e}_k, \qquad
+\alpha_k = \langle\mathbf{x}, \mathbf{e}_k\rangle,
+\qquad\text{and}\qquad
+\|\mathbf{x}\|^2 = \sum_{k=0}^{N-1} \alpha_k^2 \quad\text{(Parseval)}.
+$$
+:::
+
+::: {.proof}
+Orthonormal vectors are linearly independent: if $\sum_k c_k\mathbf{e}_k = \mathbf{0}$,
+taking the inner product with $\mathbf{e}_j$ gives $c_j = 0$. So $N$ of them
+span $\mathbb{R}^N$, and $\mathbf{x} = \sum_k c_k\mathbf{e}_k$ for some
+coefficients. Taking the inner product with $\mathbf{e}_j$ gives
+$\langle\mathbf{x},\mathbf{e}_j\rangle = \sum_k c_k\langle\mathbf{e}_k,\mathbf{e}_j\rangle = c_j$.
+Finally
+$\|\mathbf{x}\|^2 = \langle\sum_j\alpha_j\mathbf{e}_j, \sum_k\alpha_k\mathbf{e}_k\rangle = \sum_{j,k}\alpha_j\alpha_k\langle\mathbf{e}_j,\mathbf{e}_k\rangle = \sum_k\alpha_k^2$.
+:::
+
+Computing the coordinates of a vector in an orthonormal basis costs nothing
+more than inner products, and energy can be measured in either coordinate
+system. Two bases matter in this book.
+
+- The **standard basis** $\mathbf{e}_k = \boldsymbol{\delta}_k$, the impulse at
+  position $k$. Its coefficients are the samples themselves, and the expansion
+  is the reproducing formula, @prp-reproducing-formula.
+- **Oscillating bases**, whose vectors are sampled sinusoids of increasing
+  frequency. The coefficients then say *how much of each frequency* the signal
+  contains. The discrete Fourier basis of @sec-dft is the most important one.
+  Here we use a real relative, the orthonormal **discrete cosine transform**
+  (DCT) basis, which SciPy provides.
+
+::: {#def-dct-basis}
+## The DCT-II basis
+
+For $N \ge 1$ and $k = 0, \dots, N-1$, let
+$$
+c_k[n] = s_k \cos\!\left(\frac{\pi k (2n + 1)}{2N}\right), \quad n = 0, \dots, N-1,
+\qquad s_0 = \sqrt{1/N},\ s_k = \sqrt{2/N}\ (k \ge 1).
+$$
+:::
+
+We do not prove here that these $N$ vectors are orthonormal (it follows from
+the same telescoping argument as @prp-full-period-average, and is
+Exercise 5); we check it numerically, which for a given $N$ is a proof by
+computation up to rounding.
+
+```{python}
+N = 64
+nn, kk = np.meshgrid(np.arange(N), np.arange(N))                      # kk: rows, nn: columns
+C = np.where(kk == 0, np.sqrt(1 / N), np.sqrt(2 / N)) * np.cos(np.pi * kk * (2 * nn + 1) / (2 * N))
+# row k of C is the basis vector c_k
+
+assert np.allclose(C @ C.T, np.eye(N))                                # orthonormal
+x = rng.normal(size=N)
+assert np.allclose(C @ x, fft.dct(x, norm="ortho"))                    # SciPy computes the same coefficients
+print("max |C C^T - I| =", np.abs(C @ C.T - np.eye(N)).max())
+```
+
+```{python}
+#| label: fig-dct-basis
+#| fig-cap: "The first six vectors of the orthonormal DCT basis for N = 64. Vector k oscillates k half-cycles over the signal."
+fig, axes = plt.subplots(2, 3, figsize=(7, 3.6), sharex=True, sharey=True)
+for k, ax in enumerate(axes.flat):
+    ax.stem(np.arange(N), C[k], basefmt=" ", markerfmt=".")
+    ax.set_title(f"$c_{k}$", fontsize=10)
+plt.tight_layout()
+plt.show()
+```
+
+### Compression by keeping the largest coefficients
+
+Parseval has an immediate practical consequence. If we keep only some
+coefficients of $\mathbf{x}$ in an orthonormal basis and set the others to
+zero, the squared error is *exactly* the energy of the coefficients we dropped:
+
+$$
+\Big\| \mathbf{x} - \sum_{k \in S}\alpha_k\mathbf{e}_k \Big\|^2 =
+\Big\| \sum_{k \notin S}\alpha_k\mathbf{e}_k \Big\|^2 =
+\sum_{k \notin S}\alpha_k^2 .
+$$
+
+So, among all choices of $K$ coefficients to keep, the $K$ largest in absolute
+value give the smallest error. For smooth signals, the DCT concentrates the
+energy in few coefficients. This is the principle of JPEG image compression and
+of MP3 and AAC audio, which use close relatives of the DCT.
+
+```{python}
+#| label: fig-dct-compression
+#| fig-cap: "A smooth signal of 64 samples (grey) and its approximations from the K largest DCT coefficients. Eight numbers out of 64 already give a close fit."
+n = np.arange(N)
+x = 10 + 3 * np.sin(2 * np.pi * n / 64) + 1.5 * np.cos(2 * np.pi * n / 11) + 0.3 * rng.normal(size=N)
+alpha = C @ x                                           # coefficients in the DCT basis
+
+fig, axes = plt.subplots(1, 3, figsize=(7, 2.6), sharey=True)
+for ax, K in zip(axes, [2, 4, 8]):
+    keep = np.argsort(np.abs(alpha))[-K:]               # indices of the K largest
+    alpha_K = np.zeros(N)
+    alpha_K[keep] = alpha[keep]
+    x_K = C.T @ alpha_K                                 # back to samples
+    error = np.sum((x - x_K) ** 2)
+    assert np.isclose(error, np.sum(alpha ** 2) - np.sum(alpha_K ** 2))   # Parseval
+    ax.plot(n, x, color="0.7")
+    ax.plot(n, x_K)
+    ax.set_title(f"K = {K}: error {error:.1f}", fontsize=10)
+plt.tight_layout()
+plt.show()
+
+print(f"energy of x: {np.sum(x**2):.1f}; share in the 8 largest coefficients: "
+      f"{np.sort(alpha**2)[-8:].sum() / np.sum(alpha**2):.4%}")
+```
+
+## Projections and best approximation
+
+Keeping some coefficients in an orthonormal basis is a special case of a
+general operation: projecting onto a subspace.
+
+::: {#thm-best-approximation}
+## Best approximation
+
+Let $W \subseteq \mathbb{R}^N$ be a subspace with orthonormal basis
+$\mathbf{e}_0, \dots, \mathbf{e}_{K-1}$, and define the **orthogonal projection**
+$$
+P\mathbf{x} = \sum_{k=0}^{K-1}\langle\mathbf{x},\mathbf{e}_k\rangle\,\mathbf{e}_k .
+$$
+Then $\mathbf{x} - P\mathbf{x}$ is orthogonal to every vector of $W$, and for
+every $\mathbf{w} \in W$
+$$
+\|\mathbf{x} - \mathbf{w}\|^2 = \|\mathbf{x} - P\mathbf{x}\|^2 + \|P\mathbf{x} - \mathbf{w}\|^2 .
+$$
+In particular $P\mathbf{x}$ is the unique point of $W$ closest to $\mathbf{x}$.
+:::
+
+::: {.proof}
+For each $j$,
+$\langle\mathbf{x} - P\mathbf{x}, \mathbf{e}_j\rangle = \langle\mathbf{x},\mathbf{e}_j\rangle - \langle\mathbf{x},\mathbf{e}_j\rangle = 0$,
+so $\mathbf{x} - P\mathbf{x}$ is orthogonal to every combination of the
+$\mathbf{e}_j$, that is, to $W$. Since $P\mathbf{x} - \mathbf{w} \in W$,
+Pythagoras applied to $\mathbf{x} - \mathbf{w} = (\mathbf{x} - P\mathbf{x}) + (P\mathbf{x} - \mathbf{w})$
+gives the identity. The second term is zero only for $\mathbf{w} = P\mathbf{x}$.
+:::
+
+In practice the subspace is often given by vectors that are *not* orthonormal:
+the columns of a matrix $A \in \mathbb{R}^{N \times K}$ that describe a model of
+the signal. The best approximation is still characterised by orthogonality.
+
+::: {#prp-least-squares}
+## Least squares
+
+Let $A \in \mathbb{R}^{N\times K}$ have linearly independent columns and let
+$\mathbf{y} \in \mathbb{R}^N$. The vector $\mathbf{c} \in \mathbb{R}^K$ minimises
+$\|\mathbf{y} - A\mathbf{c}\|$ if and only if the residual is orthogonal to every
+column of $A$, that is,
+$$
+A^{\mathsf T}(\mathbf{y} - A\mathbf{c}) = \mathbf{0}
+\quad\Longleftrightarrow\quad
+A^{\mathsf T}A\,\mathbf{c} = A^{\mathsf T}\mathbf{y}
+\qquad\text{(normal equations)},
+$$
+and this system has exactly one solution.
+:::
+
+::: {.proof}
+The set $\{A\mathbf{c}\}$ is the column space $W$ of $A$. Gram–Schmidt gives an
+orthonormal basis of $W$, so by @thm-best-approximation the closest point
+$P\mathbf{y}$ exists, is unique and is characterised by
+$\mathbf{y} - P\mathbf{y} \perp W$, which is the stated condition. Since the
+columns are independent, $P\mathbf{y} = A\mathbf{c}$ for exactly one
+$\mathbf{c}$. ($A^{\mathsf T}A$ is then invertible: if $A^{\mathsf T}A\mathbf{c} = \mathbf{0}$,
+then $\|A\mathbf{c}\|^2 = \mathbf{c}^{\mathsf T}A^{\mathsf T}A\mathbf{c} = 0$, so $\mathbf{c} = \mathbf{0}$.)
+:::
+
+Solving the normal equations directly is numerically fragile when the columns
+are nearly dependent. `np.linalg.lstsq` computes the same solution in a
+stable way, and we use it below.
+
+### A practical model: trend plus weekly pattern
+
+Back to the daily users of a web service, as in @sec-discrete-time-signals,
+now over 20 weeks and with a growth trend. We model them as a straight line
+plus a weekly oscillation,
+$y[n] \approx c_0 + c_1 n + c_2\cos(2\pi n/7) + c_3\sin(2\pi n/7)$, and find the
+best coefficients by least squares.
+
+```{python}
+#| label: fig-least-squares
+#| fig-cap: "Daily users over 140 days (dots), the least-squares fit of a trend plus a weekly pattern (line), and the residual (bottom), which is orthogonal to all four model vectors."
+days = np.arange(140)
+users = rng.poisson(200 + 1.5 * days + 60 * np.cos(2 * np.pi * (days - 2) / 7))
+
+A = np.column_stack([np.ones_like(days), days,
+                     np.cos(2 * np.pi * days / 7), np.sin(2 * np.pi * days / 7)])
+c, *_ = np.linalg.lstsq(A, users, rcond=None)
+fit = A @ c
+residual = users - fit
+
+print("coefficients:", c.round(2))
+print("A^T r (should be ~0):", (A.T @ residual).round(6))
+assert np.allclose(A.T @ residual, 0, atol=1e-6 * np.linalg.norm(users))
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True, height_ratios=[2, 1])
+axes[0].plot(days, users, ".", color="0.6", label="data")
+axes[0].plot(days, fit, label="trend + weekly pattern")
+axes[0].legend(loc="upper left")
+axes[1].stem(days, residual, basefmt=" ", markerfmt=".")
+axes[1].set_xlabel("day")
+plt.tight_layout()
+plt.show()
+```
+
+The fitted weekly amplitude is $\sqrt{c_2^2 + c_3^2}$ and the growth is $c_1$
+users per day, close to the values used to generate the data (60 and 1.5).
+
+## Change of basis as a matrix
+
+Put the vectors of an orthonormal basis as the *rows* of a matrix $B$. Then the
+coefficients of $\mathbf{x}$ and the reconstruction of $\mathbf{x}$ from its
+coefficients are matrix products:
+
+$$
+\boldsymbol{\alpha} = B\mathbf{x} \quad\text{(analysis)}, \qquad
+\mathbf{x} = B^{\mathsf T}\boldsymbol{\alpha} \quad\text{(synthesis)}.
+$$
+
+The rows are orthonormal exactly when $BB^{\mathsf T} = I$. For a square matrix
+this implies $B^{\mathsf T}B = I$ as well, so $B^{\mathsf T} = B^{-1}$: such a
+matrix is **orthogonal**, and changing to an orthonormal basis is a rotation
+(possibly with a reflection) of $\mathbb{R}^N$. It preserves inner products,
+$\langle B\mathbf{x}, B\mathbf{y}\rangle = \mathbf{x}^{\mathsf T}B^{\mathsf T}B\mathbf{y} = \langle\mathbf{x},\mathbf{y}\rangle$,
+which is Parseval again.
+
+The DCT code above used exactly this: `C @ x` for analysis, `C.T @ alpha` for
+synthesis. A matrix product costs $N^2$ multiplications. For the DCT and for the
+discrete Fourier transform of @sec-dft, the special structure of the matrix
+allows the same product in about $N\log_2 N$ operations, which is what `fft.dct`
+and `np.fft.fft` do.
+
+## Infinite-length signals
+
+For infinite sequences the same definitions apply, with series instead of
+finite sums, provided the series converge. The right setting is the space of
+finite-energy sequences,
+
+$$
+\ell^2(\mathbb{Z}) = \Big\{x\colon\mathbb{Z}\to\mathbb{R} \;:\; \sum_{n}x[n]^2 < \infty\Big\},
+\qquad \langle x, y\rangle = \sum_{n=-\infty}^{\infty}x[n]\,y[n].
+$$
+
+::: {#prp-l2-inner-product}
+## The inner product of finite-energy signals converges
+
+If $x, y \in \ell^2(\mathbb{Z})$, the series $\sum_n x[n]y[n]$ converges
+absolutely, $|\langle x, y\rangle| \le \|x\|\,\|y\|$, and $x + y \in \ell^2(\mathbb{Z})$.
+:::
+
+::: {.proof}
+For every finite set of indices, Cauchy–Schwarz in $\mathbb{R}^N$ gives
+$\sum |x[n]||y[n]| \le (\sum x[n]^2)^{1/2}(\sum y[n]^2)^{1/2} \le \|x\|\,\|y\|$.
+The partial sums of a series of nonnegative terms that are bounded converge.
+Finally $(x[n] + y[n])^2 \le 2x[n]^2 + 2y[n]^2$.
+:::
+
+So $\ell^2(\mathbb{Z})$ is a vector space with an inner product, and all the
+geometry above (Cauchy–Schwarz, Pythagoras, projections onto subspaces with a
+finite orthonormal basis) holds without change. Infinite orthonormal bases need
+one more ingredient, the convergence of infinite expansions, which requires
+the space to be *complete*; $\ell^2(\mathbb{Z})$ is, and it is the standard
+example of a **Hilbert space**. The details are in Chapter 3 of
+@prandoni2008. We will only need the standard basis $\{\mathcal{S}^k\delta\}$,
+for which the expansion is the reproducing formula.
+
+## Correlation: inner products that slide
+
+How much does a signal resemble a shifted copy of another? Measuring this for
+every shift gives a whole sequence of inner products.
+
+::: {#def-correlation}
+## Cross-correlation and autocorrelation
+
+For $x, y \in \ell^2(\mathbb{Z})$, the **cross-correlation** is the sequence
+$$
+r_{xy}[k] = \sum_{n=-\infty}^{\infty} x[n + k]\, y[n] = \langle \mathcal{S}^{-k}x, y\rangle,
+\qquad k \in \mathbb{Z},
+$$
+and the **autocorrelation** is $r_{xx}$.
+:::
+
+By @prp-l2-inner-product every value exists. Read $r_{xy}[k]$ as "the
+similarity between $y$ and $x$ moved $k$ samples to the left": a large value
+at lag $k$ means that $x$ contains a copy of $y$ delayed by $k$.
+
+::: {#prp-autocorrelation}
+## Properties of the autocorrelation
+
+For $x \in \ell^2(\mathbb{Z})$:
+
+1. $r_{xx}[0] = E_x$ and $r_{xx}[-k] = r_{xx}[k]$;
+2. $|r_{xx}[k]| \le r_{xx}[0]$ for every $k$;
+3. if $x \ne 0$ has finite support, the inequality in (2) is strict for $k \ne 0$.
+:::
+
+::: {.proof}
+(1) $r_{xx}[0] = \sum x[n]^2$, and substituting $m = n + k$ in $r_{xx}[-k]$ gives
+$r_{xx}[k]$. (2) The shift does not change energy, so Cauchy–Schwarz gives
+$|\langle\mathcal{S}^{-k}x, x\rangle| \le \|x\|^2$. (3) Equality would require
+$\mathcal{S}^{-k}x = cx$. If the support of $x$ is $[M, M']$, the support of
+$\mathcal{S}^{-k}x$ is $[M - k, M' - k]$, which is a different interval when
+$k \ne 0$, so this is impossible for a nonzero $x$.
+:::
+
+### Measuring a delay
+
+A sonar, a radar or a GPS receiver sends a known pattern $s$ and receives an
+attenuated, delayed and noisy copy, $r[n] = a\,s[n - d] + w[n]$. By linearity,
+$r_{rs}[k] = a\,r_{ss}[k - d] + r_{ws}[k]$. By @prp-autocorrelation the first
+term has its maximum exactly at $k = d$; the noise term is small when the
+pattern has a lot of energy. So the delay is estimated as the lag of the
+largest cross-correlation.
+
+`scipy.signal.correlate(r, s)` computes $r_{rs}$ for all lags where the two
+arrays overlap, and `scipy.signal.correlation_lags` returns the corresponding
+values of $k$.
+
+```{python}
+#| label: fig-delay-estimation
+#| fig-cap: "A pseudo-random $\\pm 1$ pattern of 127 samples (top) is received with a delay of 300 samples, attenuated by 0.2 and buried in noise (middle). The cross-correlation (bottom) peaks exactly at the delay."
+s = rng.choice([-1.0, 1.0], size=127)                # the known pattern
+d_true, a = 300, 0.2
+r = rng.normal(0, 0.5, size=1000)
+r[d_true:d_true + s.size] += a * s
+
+r_rs = signal.correlate(r, s, mode="full")
+lags = signal.correlation_lags(r.size, s.size, mode="full")
+d_hat = lags[np.argmax(r_rs)]
+print("estimated delay:", d_hat)
+assert d_hat == d_true
+
+fig, axes = plt.subplots(3, 1, figsize=(7, 6))
+axes[0].step(np.arange(s.size), s, where="mid")
+axes[0].set_title("pattern $s$", fontsize=10)
+axes[1].plot(r, lw=0.7)
+axes[1].set_title("received $r$", fontsize=10)
+axes[2].plot(lags, r_rs, lw=0.8)
+axes[2].axvline(d_true, color="C3", ls="--", lw=0.8)
+axes[2].set_title(r"cross-correlation $r_{rs}[k]$", fontsize=10)
+axes[2].set_xlabel("lag $k$")
+plt.tight_layout()
+plt.show()
+```
+
+The received pattern is invisible in the middle panel, since its amplitude is
+0.2 against noise of standard deviation 0.5. The peak is nevertheless sharp,
+because a random $\pm1$ pattern is almost orthogonal to its own shifts: its
+autocorrelation is $127$ at lag 0 and small elsewhere. Communication systems
+choose such patterns on purpose.
+
+### Finding a period
+
+The autocorrelation of a periodic signal is periodic, so its first strong peak
+after lag 0 reveals the period, even under heavy noise. This is how many pitch
+detectors estimate the note being sung.
+
+```{python}
+#| label: fig-autocorrelation-period
+#| fig-cap: "A noisy periodic signal with period 37 samples (top) and its autocorrelation (bottom). Apart from lag 0, the highest peak is at lag 37."
+period = 37
+one_period = rng.uniform(-1, 1, period)
+x = np.tile(one_period, 20) + rng.normal(0, 1.0, period * 20)
+
+r_xx = signal.correlate(x, x, mode="full")
+lags = signal.correlation_lags(x.size, x.size, mode="full")
+search = (lags >= 5) & (lags <= 200)
+estimated = lags[search][np.argmax(r_xx[search])]
+print("estimated period:", estimated)
+assert estimated == period
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5))
+axes[0].plot(x, lw=0.7)
+axes[1].plot(lags[lags >= 0], r_xx[lags >= 0], lw=0.8)
+axes[1].set_xlim(0, 200)
+axes[1].set_xlabel("lag $k$")
+plt.tight_layout()
+plt.show()
+```
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: how much noise can correlation beat?
+
+Increase `noise_std` until the estimated delay is wrong. Then make the pattern
+longer. Can you predict how the tolerable noise grows with the pattern length?
+(Hint: the peak grows like $L$, the noise in the correlation like $\sqrt{L}$.)
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+rng = np.random.default_rng(0)
+L, d_true, a, noise_std = 127, 300, 0.2, 1.5
+
+s = rng.choice([-1.0, 1.0], size=L)
+r = rng.normal(0, noise_std, size=1000 + L)
+r[d_true:d_true + L] += a * s
+
+corr = np.correlate(r, s, mode="valid")      # corr[k] = sum_n r[n + k] s[n], k >= 0
+d_hat = np.argmax(corr)
+plt.plot(corr)
+plt.axvline(d_true, color="C3", ls="--")
+plt.title(f"true delay {d_true}, estimated {d_hat}")
+plt.show()
+```
+:::
+::::
+
+## Summary
+
+- A finite signal is a vector. The inner product $\langle\mathbf{x},\mathbf{y}\rangle$
+  measures similarity, the norm squared is the energy, and the
+  Cauchy–Schwarz inequality (@thm-cauchy-schwarz) bounds one by the other.
+- In an orthonormal basis, coefficients are inner products and energy is
+  preserved (@thm-orthonormal-expansion). Dropping small coefficients costs
+  exactly their energy, which is the principle of transform coding.
+- The orthogonal projection onto a subspace is the best approximation
+  (@thm-best-approximation). With a non-orthonormal model, the normal
+  equations or `np.linalg.lstsq` give it (@prp-least-squares).
+- An orthonormal change of basis is an orthogonal matrix: analysis is $B\mathbf{x}$,
+  synthesis is $B^{\mathsf T}\boldsymbol{\alpha}$.
+- Finite-energy sequences form the Hilbert space $\ell^2(\mathbb{Z})$, where the
+  same geometry holds.
+- Cross-correlation is a sliding inner product. Its peak locates a known
+  pattern and measures delays; the autocorrelation peaks at lag 0
+  (@prp-autocorrelation) and, for periodic signals, at multiples of the period.
+
+## Exercises
+
+1. **Equality in Cauchy–Schwarz.** Show that the triangle inequality is an
+   equality if and only if one vector is a nonnegative multiple of the other.
+2. **Random vectors are almost orthogonal.** Draw pairs of independent vectors
+   with i.i.d. Gaussian entries in $\mathbb{R}^N$ and plot the mean of
+   $|\cos\theta|$ against $N$ for $N = 2, 4, \dots, 1024$. Show that
+   $\mathbb{E}[\langle\mathbf{x},\mathbf{y}\rangle^2] = N$ for standard Gaussian
+   entries and deduce that $\cos\theta$ is typically of order $1/\sqrt{N}$.
+3. **Gram–Schmidt.** Implement Gram–Schmidt orthonormalisation and apply it to
+   the four columns of the matrix $A$ of the least-squares example. Check that
+   projecting with the resulting orthonormal basis gives the same fit as
+   `np.linalg.lstsq`.
+4. **Haar basis.** For $N = 8$, the Haar basis consists of the constant vector
+   $\frac{1}{\sqrt 8}(1, \dots, 1)$ and the vectors that are $+c$ on one half of a
+   dyadic block, $-c$ on the other half and zero elsewhere, for blocks of length
+   8, 4 and 2. Write them down, choose each $c$ so the vectors have unit norm,
+   and prove that they form an orthonormal basis. Compress the signal of
+   @fig-dct-compression (resampled to $N = 8$, or with a generalised basis for
+   $N = 64$) and compare with the DCT.
+5. **Orthogonality of the DCT.** Using
+   $2\cos a\cos b = \cos(a - b) + \cos(a + b)$ and a telescoping argument as in
+   @prp-full-period-average, prove that the vectors of @def-dct-basis are
+   orthonormal.
+6. **Projection matrices.** Show that if $A$ has independent columns, then
+   $P = A(A^{\mathsf T}A)^{-1}A^{\mathsf T}$ satisfies $P^2 = P$ and
+   $P^{\mathsf T} = P$, and that $P\mathbf{y}$ is the least-squares fit. Verify
+   numerically for the users example.
+7. **Correlation and convolution.** Show that $r_{xy}[k] = \sum_n x[n]\,y[n - k]$
+   and that $r_{xy}[k] = r_{yx}[-k]$. Check the conventions of
+   `scipy.signal.correlate` against @def-correlation with a short example.
+8. **Detecting a chirp.** Replace the $\pm 1$ pattern in the delay experiment
+   by a sinusoid of constant frequency, and then by a *chirp*,
+   $s[n] = \cos(\pi n^2/(2L))$, $0 \le n < L$. Compare the sharpness of the
+   correlation peaks and explain the difference with
+   @prp-autocorrelation.

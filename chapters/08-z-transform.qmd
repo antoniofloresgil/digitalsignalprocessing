@@ -1,17 +1,412 @@
 # The z-Transform as a Tool {#sec-z-transform}
 
-The z-transform is presented only as a bookkeeping device that turns difference equations into polynomials. No contour integrals.
+The leaky integrator of @sec-lti computed an infinitely long convolution with
+one multiplication and one addition per sample, because it was written as a
+**recursion**. Every practical IIR filter works this way. This chapter studies
+recursive filters, defined by **difference equations**, with the tool designed
+for them: the **z-transform**. It turns delays into powers of a variable $z$,
+convolutions into products and difference equations into ratios of
+polynomials. The roots of those polynomials, the **poles** and **zeros**, tell
+at a glance whether a filter is stable and what its frequency response looks
+like.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+We use the z-transform as an engineering tool, as Chapter 6 of @prandoni2008
+does, and prove what we use. The complex-analysis theory behind it, such as the
+inversion integral, is not needed.
+
+By the end of the chapter you should be able to:
+
+- implement a difference equation and relate it to its impulse response;
+- compute z-transforms and their regions of convergence;
+- obtain the transfer function of a difference equation;
+- decide the stability of a causal filter from its poles;
+- sketch a magnitude response from a pole–zero plot;
+- design a notch filter and a resonator by placing poles and zeros, and analyse
+  any filter with `scipy.signal`.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+rng = np.random.default_rng(8)
+plt.rcParams["figure.figsize"] = (7, 3)
+
+def zplane(ax, b, a, title=None):
+    """Pole-zero plot of H(z) = B(z)/A(z), with the unit circle."""
+    z, p, _ = signal.tf2zpk(b, a)
+    circle = np.exp(1j * np.linspace(0, 2 * np.pi, 400))
+    ax.plot(circle.real, circle.imag, color="0.8")
+    ax.plot(z.real, z.imag, "o", mfc="none", ms=8, label="zeros")
+    ax.plot(p.real, p.imag, "x", ms=8, mew=2, label="poles")
+    ax.axhline(0, color="0.9", lw=0.8); ax.axvline(0, color="0.9", lw=0.8)
+    ax.set_aspect("equal")
+    if title:
+        ax.set_title(title, fontsize=10)
+```
+
+## Difference equations as algorithms
+
+::: {#def-ccde}
+## Constant-coefficient difference equation
+
+A **constant-coefficient difference equation** (CCDE) relates an input $x$ and
+an output $y$ by
+$$
+\sum_{k=0}^{K} a_k\,y[n - k] = \sum_{k=0}^{M} b_k\,x[n - k], \qquad a_0 = 1 .
+$$
+Solved for $y[n]$, it is an algorithm:
+$$
+y[n] = \sum_{k=0}^{M}b_k\,x[n - k] - \sum_{k=1}^{K}a_k\,y[n - k].
+$$
+With **initial rest**, meaning $x[n] = y[n] = 0$ for $n$ before the input starts,
+each output depends only on values already computed.
 :::
 
-## Planned contents
+The leaky integrator is $y[n] - \lambda y[n-1] = (1 - \lambda)x[n]$, with
+$a = (1, -\lambda)$ and $b = (1 - \lambda)$. If all $a_k$ with $k \ge 1$ are zero,
+the equation is a convolution with $h = (b_0, \dots, b_M)$: an FIR filter. The
+direct implementation is a loop; `scipy.signal.lfilter(b, a, x)` runs the same
+loop in compiled code.
 
-- Difference equations as algorithms
-- Delays become powers of z; the transfer function
-- Poles and zeros, and reading a frequency response from a pole-zero plot
-- Stability at a glance
-- `scipy.signal` for analysis
+```{python}
+def ccde(b, a, x):
+    """Run the difference equation with initial rest (a[0] must be 1)."""
+    y = np.zeros(len(x))
+    for n in range(len(x)):
+        y[n] = sum(b[k] * x[n - k] for k in range(len(b)) if n - k >= 0) \
+             - sum(a[k] * y[n - k] for k in range(1, len(a)) if n - k >= 0)
+    return y
+
+b, a = [0.2, 0.3], [1.0, -0.9, 0.2]
+x = rng.normal(size=50)
+assert np.allclose(ccde(b, a, x), signal.lfilter(b, a, x))
+print("loop and lfilter agree")
+```
+
+With initial rest, a CCDE is a causal LTI filter (the argument of
+@prp-leaky-integrator applies unchanged), so it has an impulse response
+$h$: the output for $x = \delta$. The z-transform will tell us what $h$ is without
+running the loop forever.
+
+## The z-transform
+
+::: {#def-z-transform}
+## z-transform and region of convergence
+
+The **z-transform** of a signal $x$ is
+$$
+X(z) = \sum_{n=-\infty}^{\infty}x[n]\,z^{-n},
+$$
+defined for the complex numbers $z$ where the series converges absolutely. That
+set is the **region of convergence** (ROC).
+:::
+
+Since $|x[n]z^{-n}| = |x[n]|\,|z|^{-n}$, convergence depends only on $|z|$, so
+the ROC is a set of circles around the origin: in all our examples, a ring
+$r_1 < |z| < r_2$. On the unit circle, $z = e^{j\omega}$, the z-transform is the
+DTFT: $X(e^{j\omega})$. This explains the notation of @sec-spectral-analysis.
+
+::: {#exm-z-transforms}
+## Basic z-transforms
+
+1. $\delta$ has $X(z) = 1$, with ROC all of $\mathbb{C}$; $\mathcal{S}^k\delta$ has
+   $z^{-k}$.
+2. $a^nu[n]$ has $X(z) = \dfrac{1}{1 - az^{-1}}$ with ROC $|z| > |a|$.
+3. $-a^nu[-n-1]$ has $X(z) = \dfrac{1}{1 - az^{-1}}$ with ROC $|z| < |a|$.
+:::
+
+::: {.proof}
+(1) A single term. (2) $\sum_{n\ge0}(az^{-1})^n$ is a geometric series that
+converges absolutely exactly when $|az^{-1}| < 1$. (3)
+$-\sum_{n\le-1}a^nz^{-n} = -\sum_{m\ge1}(a^{-1}z)^m = -\frac{a^{-1}z}{1 - a^{-1}z} = \frac{1}{1 - az^{-1}}$,
+for $|a^{-1}z| < 1$.
+:::
+
+The same formula belongs to two different signals: the formula alone does not
+determine the signal, the formula *and its ROC* do. For causal signals the ROC
+is the outside of a circle.
+
+::: {#prp-z-properties}
+## Properties of the z-transform
+
+For $x, y$ with z-transforms converging on a common ring:
+
+1. **Linearity.** $\alpha x + \beta y$ has transform $\alpha X(z) + \beta Y(z)$.
+2. **Delay.** $\mathcal{S}^kx$ has transform $z^{-k}X(z)$.
+3. **Convolution.** $x * y$ has transform $X(z)\,Y(z)$ on that common ring.
+:::
+
+::: {.proof}
+(1) Sum of convergent series. (2) $\sum_nx[n - k]z^{-n} = z^{-k}\sum_mx[m]z^{-m}$.
+(3) For $z$ in both ROCs, $\sum_n\sum_k|x[k]||y[n - k]||z|^{-n} = \sum_k|x[k]||z|^{-k}\sum_m|y[m]||z|^{-m} < \infty$,
+so the double series converges absolutely and can be summed in either order,
+exactly as in the proof of @thm-convolution-theorem.
+:::
+
+## The transfer function
+
+::: {#thm-transfer-function}
+## Transfer function of a CCDE
+
+Let $h$ be the impulse response of the CCDE of @def-ccde with initial rest,
+and suppose its z-transform converges for $|z| > R$. Then, for $|z| > R$ with
+$A(z) \ne 0$,
+$$
+H(z) = \frac{B(z)}{A(z)} = \frac{b_0 + b_1z^{-1} + \cdots + b_Mz^{-M}}{1 + a_1z^{-1} + \cdots + a_Kz^{-K}} .
+$$
+:::
+
+::: {.proof}
+$h$ satisfies $\sum_ka_kh[n - k] = \sum_kb_k\delta[n - k]$ for every $n$. The left
+side is the convolution of $h$ with the finite sequence $(a_0, \dots, a_K)$, the
+right side is $(b_0, \dots, b_M)$. Taking z-transforms with @prp-z-properties
+gives $A(z)H(z) = B(z)$.
+:::
+
+$H(z)$ is the **transfer function**. Reading it off a difference equation
+takes no computation at all: each delay $k$ becomes $z^{-k}$. Multiplying
+numerator and denominator by $z^{\max(K, M)}$ makes them polynomials in $z$.
+Their roots are the **zeros** and **poles** of the filter.
+
+::: {#thm-stability-poles}
+## Stability from the poles
+
+Let a CCDE with initial rest have transfer function $B(z)/A(z)$ with no common
+roots, and suppose its poles $p_1, \dots, p_K$ are distinct and nonzero. Then
+$$
+h[n] = \sum_{i=1}^{K} c_i\,p_i^n\,u[n] + f[n]
+$$
+for some constants $c_i \ne 0$ and a finite sequence $f$ (zero if $M < K$). The
+filter is BIBO-stable if and only if every pole satisfies $|p_i| < 1$.
+:::
+
+::: {.proof}
+Partial fractions (from algebra: a proper rational function with distinct
+poles is a sum of simple fractions; the improper part is a polynomial in
+$z^{-1}$) give
+$H(z) = \sum_i\frac{c_i}{1 - p_iz^{-1}} + F(z)$, with $F$ a polynomial in $z^{-1}$.
+Each $c_i$ is nonzero, otherwise $p_i$ would not be a pole. The impulse response
+is causal and, by @exm-z-transforms (2) and linearity, the causal signal with
+this transform is $\sum_ic_ip_i^nu[n] + f[n]$. By @thm-bibo, stability is
+absolute summability of $h$. If all $|p_i| < 1$, each geometric term is
+absolutely summable. If some $|p_i| \ge 1$, let $\rho$ be the largest modulus
+among the poles; the terms with $|p_i| = \rho$ form
+$\rho^n\sum_ic_ie^{j\theta_in}$, a nonzero combination of distinct complex
+exponentials, which does not tend to 0 (its average power is
+$\sum|c_i|^2 > 0$, by the orthogonality argument of @prp-sum-of-roots), while
+the other terms are smaller by a factor that tends to zero. So $h[n]$ does not
+tend to 0 and cannot be absolutely summable.
+:::
+
+Repeated poles add terms $n^mp^nu[n]$, and the conclusion is the same: a causal
+recursive filter is stable exactly when all its poles lie strictly inside the
+unit circle. `scipy.signal.residuez` computes the partial fractions, so we can
+check the formula against the output of the loop:
+
+```{python}
+b, a = [1.0, 0.5], [1.0, -1.2, 0.72]                    # poles 0.6 ± 0.6j, |p| ≈ 0.85
+c, p, f = signal.residuez(b, a)
+n = np.arange(60)
+h_formula = sum(ci * pi ** n for ci, pi in zip(c, p)).real
+h_formula[: len(f)] += np.real(f)
+h_loop = signal.lfilter(b, a, (n == 0).astype(float))
+print("poles:", np.round(p, 3), " moduli:", np.round(np.abs(p), 3))
+assert np.allclose(h_formula, h_loop)
+```
+
+```{python}
+#| label: fig-poles-stability
+#| fig-cap: "Impulse responses of the filter $1/(1 - 2r\\cos\\theta\\, z^{-1} + r^2 z^{-2})$, whose poles are $re^{\\pm j\\theta}$ with $\\theta = \\pi/5$, for $r = 0.9$, $1$ and $1.05$: decaying, sustained and exploding oscillations."
+theta = np.pi / 5
+n = np.arange(80)
+fig, axes = plt.subplots(1, 3, figsize=(7, 2.6))
+for ax, r in zip(axes, [0.9, 1.0, 1.05]):
+    a = [1, -2 * r * np.cos(theta), r ** 2]
+    ax.stem(n, signal.lfilter([1], a, (n == 0).astype(float)), basefmt=" ", markerfmt=".")
+    ax.set_title(f"r = {r}", fontsize=10)
+plt.tight_layout()
+plt.show()
+```
+
+With $r = 1$ the filter is an **oscillator**: one impulse starts a sinusoid that
+never stops. This is a perfectly useful device, for example to generate tones,
+but not a stable filter.
+
+## Reading a frequency response from poles and zeros
+
+Write the transfer function in factored form,
+$H(z) = b_0z^{K - M}\prod_{i=1}^{M}(z - z_i)\big/\prod_{i=1}^{K}(z - p_i)$.
+On the unit circle $|z| = 1$, so $|z^{K-M}| = 1$ and
+$$
+|H(e^{j\omega})| = |b_0|\,\frac{\prod_i|e^{j\omega} - z_i|}{\prod_i|e^{j\omega} - p_i|}.
+$$
+Each factor is the *distance* from the point $e^{j\omega}$ on the unit circle to a
+zero or a pole. As $\omega$ goes from 0 to $\pi$, the point walks along the upper
+half of the circle. Near a zero the magnitude drops, and a zero *on* the circle
+gives an exact null. Near a pole the magnitude rises, the more sharply the
+closer the pole is to the circle. That is the whole art of designing simple
+filters by hand.
+
+### A notch filter for mains hum
+
+Medical and audio recordings often pick up 50 Hz hum from the mains. To remove
+it from an electrocardiogram sampled at $F_s = 500$ Hz, with
+$\omega_0 = 2\pi\cdot50/500$, we place zeros on the unit circle at $e^{\pm j\omega_0}$,
+which kill that frequency exactly, and poles just inside at $re^{\pm j\omega_0}$,
+which cancel the effect of the zeros everywhere except very close to $\omega_0$:
+$$
+H(z) = \frac{(1 - e^{j\omega_0}z^{-1})(1 - e^{-j\omega_0}z^{-1})}{(1 - re^{j\omega_0}z^{-1})(1 - re^{-j\omega_0}z^{-1})}
+= \frac{1 - 2\cos\omega_0\,z^{-1} + z^{-2}}{1 - 2r\cos\omega_0\,z^{-1} + r^2z^{-2}}.
+$$
+
+```{python}
+#| label: fig-notch
+#| fig-cap: "A notch filter with $r = 0.98$: pole-zero plot (left) and magnitude response (right). The response is 1 almost everywhere and exactly 0 at 50 Hz."
+fs, f0, r = 500, 50, 0.98
+w0 = 2 * np.pi * f0 / fs
+b_notch = [1, -2 * np.cos(w0), 1]
+a_notch = [1, -2 * r * np.cos(w0), r ** 2]
+
+w, H = signal.freqz(b_notch, a_notch, worN=4096, fs=fs)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3), width_ratios=[1, 1.6])
+zplane(ax1, b_notch, a_notch)
+ax2.plot(w, np.abs(H))
+ax2.set_xlabel("frequency (Hz)"); ax2.set_ylabel(r"$|H|$")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: fig-notch-ecg
+#| fig-cap: "A synthetic electrocardiogram with 50 Hz hum (top) and after the notch filter (bottom, the clean signal dashed). After a short transient the hum is gone and the heartbeats are intact."
+t = np.arange(0, 4, 1 / fs)
+beat = lambda t: (1.2 * np.exp(-((t % 0.8) - 0.4) ** 2 / (2 * 0.012 ** 2))
+                  + 0.25 * np.exp(-((t % 0.8) - 0.6) ** 2 / (2 * 0.04 ** 2))
+                  - 0.15 * np.exp(-((t % 0.8) - 0.37) ** 2 / (2 * 0.01 ** 2)))
+ecg = beat(t)
+recorded = ecg + 0.4 * np.sin(2 * np.pi * 50 * t + 0.7)
+cleaned = signal.lfilter(b_notch, a_notch, recorded)
+
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True)
+axes[0].plot(t, recorded, lw=0.7)
+axes[1].plot(t, cleaned, lw=0.8)
+axes[1].plot(t, ecg, "k--", lw=0.6)
+axes[1].set_xlabel("time (s)")
+plt.tight_layout()
+plt.show()
+
+residual = np.std((cleaned - ecg)[t > 1])
+print(f"error after the transient: {residual:.3f} (hum amplitude was 0.4)")
+assert residual < 0.05
+```
+
+The closer $r$ is to 1, the narrower the notch, and the longer the transient,
+because the poles' impulse response decays like $r^n$ (Exercise 4).
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: drag the poles
+
+A resonator has a pair of poles at $re^{\pm j\theta}$ and zeros at $\pm1$. Change
+`r` and `theta` and watch the peak of the magnitude response follow the poles.
+What happens as `r` approaches 1?
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+
+r, theta = 0.95, np.pi / 3
+b = [1, 0, -1]
+a = [1, -2 * r * np.cos(theta), r ** 2]
+w, H = signal.freqz(b, a, worN=2048)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3))
+circle = np.exp(1j * np.linspace(0, 2 * np.pi, 300))
+ax1.plot(circle.real, circle.imag, color="0.8")
+ax1.plot(np.roots(a).real, np.roots(a).imag, "x", ms=9)
+ax1.plot([1, -1], [0, 0], "o", mfc="none", ms=9)
+ax1.set_aspect("equal")
+ax2.plot(w, 20 * np.log10(np.abs(H) + 1e-12))
+ax2.axvline(theta, color="C3", ls="--")
+ax2.set_xlabel("omega"); ax2.set_ylabel("dB")
+plt.show()
+```
+:::
+::::
+
+## Analysing filters with `scipy.signal`
+
+Most of the analysis of this chapter is one function call:
+
+| question | call |
+|----------|------|
+| run the filter | `signal.lfilter(b, a, x)` |
+| poles, zeros, gain | `signal.tf2zpk(b, a)` |
+| back to coefficients | `signal.zpk2tf(z, p, k)` |
+| frequency response | `signal.freqz(b, a, worN, fs)` |
+| impulse response in closed form | `signal.residuez(b, a)` |
+| group delay | `signal.group_delay((b, a))` |
+
+A last example puts them together. We analyse the filter with poles at
+$0.9e^{\pm j\pi/4}$ and a double zero at $z = -1$, check stability, and confirm that
+`freqz` agrees with the geometric formula.
+
+```{python}
+z_ = np.array([-1, -1])
+p_ = 0.9 * np.exp(1j * np.array([np.pi / 4, -np.pi / 4]))
+b, a = signal.zpk2tf(z_, p_, 1.0)
+b, a = b.real, a.real
+print("b =", b.round(4), " a =", a.round(4))
+print("stable:", np.all(np.abs(np.roots(a)) < 1))
+
+w, H = signal.freqz(b, a, worN=512)
+geometric = np.prod(np.abs(np.exp(1j * w)[:, None] - z_), axis=1) / \
+            np.prod(np.abs(np.exp(1j * w)[:, None] - p_), axis=1)
+assert np.allclose(np.abs(H), geometric)
+print("freqz agrees with the distances to poles and zeros")
+```
+
+## Summary
+
+- A CCDE is a recursive algorithm; with initial rest it is a causal LTI filter
+  (@def-ccde).
+- The z-transform $X(z) = \sum_nx[n]z^{-n}$ is defined on a ring, its ROC. The ROC
+  is part of the transform (@exm-z-transforms). On the unit circle it is the
+  DTFT.
+- Delays become powers of $z^{-1}$ and convolution becomes multiplication
+  (@prp-z-properties), so a CCDE has the rational transfer function
+  $B(z)/A(z)$ (@thm-transfer-function).
+- A causal rational filter is stable if and only if all its poles are inside
+  the unit circle (@thm-stability-poles).
+- $|H(e^{j\omega})|$ is a ratio of distances from $e^{j\omega}$ to the zeros and the
+  poles: zeros make dips, poles make peaks. Notches and resonators are designed
+  by placing them.
+
+## Exercises
+
+1. **Transforms with ROC.** Compute the z-transform and the ROC of
+   $x[n] = 0.5^nu[n] + 2^nu[-n-1]$. Is there a stable signal with the same
+   formula but a different ROC? Which one?
+2. **Second-order sections.** Find the impulse response of
+   $y[n] = y[n-1] - 0.5y[n-2] + x[n]$ in closed form, using partial fractions by
+   hand, and check it with `residuez` and `lfilter`.
+3. **FIR filters have only zeros.** Show that the transfer function of an FIR
+   filter has all its poles at $z = 0$, and that FIR filters are always stable,
+   in agreement with @thm-bibo.
+4. **Notch width.** For the notch of @fig-notch, measure the bandwidth at
+   $-3$ dB and the time for the transient to decay below 1 % for
+   $r = 0.9, 0.95, 0.98, 0.995$. Show that both are related to $1 - r$, and
+   explain the trade-off.
+5. **Inverse filters.** An echo is modelled by $h[n] = \delta[n] + \alpha\delta[n - D]$.
+   Find the transfer function of the filter that undoes it, and show that it is
+   causal and stable exactly when $|\alpha| < 1$. Remove a simulated echo from a
+   recording.
+6. **Minimum phase.** Two FIR filters, $1 - 0.5z^{-1}$ and $-0.5 + z^{-1}$, have
+   the same magnitude response. Prove it, and compare their phase responses and
+   the way their impulse responses distribute energy over time.
+7. **A digital oscillator.** Use the recursion with poles on the unit circle to
+   generate a 440 Hz tone at $F_s = 8$ kHz. Run it for $10^6$ samples and measure
+   the drift of its amplitude caused by rounding errors. Compare with
+   `np.cos`.

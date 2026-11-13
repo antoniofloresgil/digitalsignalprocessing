@@ -65,3 +65,26 @@
   `fig-cap` end up in hyperref labels, which XeLaTeX never sees as stable, so
   every build ran LaTeX ten times. Captions use `$...$` math instead.
 - **Python library guide** as the last appendix (`appendices/python-libraries.qmd`).
+
+## 2026-11-13: chapters 3-14 and the math toolbox
+
+- **Every chapter is executable and self-checking.** Each states its results in
+  theorem blocks and verifies them with `assert`s on numerical experiments;
+  measured quantities (timings, SNRs, BERs) are printed, never hard-coded in the
+  text or captions. Timings are shown but never asserted, since they depend on
+  the build machine.
+- **Proof policy in practice.** Results are proved when the tools are in the
+  book (geometric sums, Cauchy-Schwarz, absolute convergence, partial
+  fractions). A few are stated with a reference instead: inversion of the
+  continuous Fourier transform, mean-square convergence of Fourier series (used
+  in the sampling theorem), the Gibbs overshoot limit, the alternation theorem,
+  the non-bandlimitedness of time-limited signals (sketched via analyticity),
+  and dither theory.
+- **Modem parameters (chapter 14).** $F_s$ = 8 kHz, 1000 baud, 8 samples per
+  symbol, root-raised-cosine pulses with roll-off 0.35 spanning ±8 symbols,
+  carrier 1800 Hz, telephone band 300-3400 Hz (101-tap FIR), 64-symbol QPSK
+  preamble, second-order decision-directed PLL. The line's delay also rotates
+  the carrier by $\omega_c D$, which the "perfect synchronisation" sections
+  compensate explicitly.
+- **PDF contents geometry.** KOMA's dynamic number widths in the contents need
+  more LaTeX runs than Quarto performs, so `styles/book.tex` fixes the widths.
