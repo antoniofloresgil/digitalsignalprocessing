@@ -12,23 +12,27 @@ That simple decision, *everything becomes a list of numbers*, is what makes DSP
 so powerful: the same processor, running different programs, can be a radio,
 a hearing aid, a music synthesiser or a modem.
 
-This chapter explains, with small experiments, the two steps that turn a
-physical phenomenon into a list of numbers, and why it is worth doing.
+This chapter looks at the two steps that turn a physical quantity into a list
+of numbers, *sampling* and *quantization*, and at the reason why it is worth
+doing. Each step comes with a precise statement of what it keeps and what it
+loses. Some of these statements are proved here; the others are stated exactly
+and proved in later chapters.
 
-By the end of it you should be able to:
+By the end of the chapter you should be able to:
 
-- explain what *sampling* and *quantization* are and what each one loses;
-- see why taking samples "fast enough" matters;
-- estimate how many bits a measurement needs;
-- explain why digital transmission beats analog transmission over long
-  distances.
+- explain what sampling and quantization are and what each one loses;
+- state the sampling theorem with its hypotheses, and recognise aliasing;
+- compute the signal-to-noise ratio of a uniform quantizer;
+- explain, with numbers, why digital transmission beats analog transmission
+  over long distances.
 
-We will use three libraries throughout the book: NumPy for arrays and maths,
-Matplotlib for plots and, later, SciPy for signal processing routines.
+We use three libraries throughout the book: NumPy for arrays and maths,
+Matplotlib for plots and SciPy for signal processing and statistics routines.
 
 ```{python}
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy import stats
 
 rng = np.random.default_rng(2026)   # fixed seed: the same "random" numbers every build
 plt.rcParams["figure.figsize"] = (7, 3)
@@ -37,27 +41,33 @@ plt.rcParams["figure.figsize"] = (7, 3)
 ## A signal is a list of numbers
 
 Suppose we read a thermometer at noon every day for a month. The result is a
-list of 30 numbers. To build a realistic example, we pretend that the "true"
-temperature is a smooth function of time and we read it once per day.
+list of 30 numbers. To have something to compare with, we invent a "true"
+temperature that is a smooth function of time $t$, measured in days. It has a
+mean of 10 °C, a slow oscillation with a period of one month and a faster
+oscillation with a period of six days:
+
+$$
+x(t) = 10 + 3\sin\!\left(\frac{2\pi t}{30}\right) + 1.5\cos\!\left(\frac{2\pi t}{6}\right).
+$$ {#eq-temperature}
 
 ```{python}
 def true_temperature(t):
-    """Temperature in °C at time t (in days). A slow trend plus a faster wiggle."""
-    return 10 + 3 * np.sin(2 * np.pi * t / 30) + 1.5 * np.cos(2 * np.pi * t / 11)
+    """Temperature in °C at time t (in days), equation (1.1)."""
+    return 10 + 3 * np.sin(2 * np.pi * t / 30) + 1.5 * np.cos(2 * np.pi * t / 6)
 
 days = np.arange(30)                 # n = 0, 1, ..., 29
 readings = true_temperature(days)    # one reading per day
 
-t_fine = np.linspace(0, 30, 3000)    # a very dense grid to draw the "true" curve
+t_fine = np.linspace(0, 30, 3001)    # a dense grid, only to draw the curve
 ```
 
 ```{python}
 #| label: fig-temperature
 #| fig-cap: "Daily temperature readings (dots) taken from a smooth underlying curve (grey line)."
 fig, ax = plt.subplots()
-ax.plot(t_fine, true_temperature(t_fine), color="0.7", label="true temperature")
-ax.stem(days, readings, basefmt=" ", label="daily readings")
-ax.set_xlabel("day $n$")
+ax.plot(t_fine, true_temperature(t_fine), color="0.7", label="true temperature $x(t)$")
+ax.stem(days, readings, basefmt=" ", label="daily readings $x[n]$")
+ax.set_xlabel("day")
 ax.set_ylabel("°C")
 ax.legend(loc="lower left")
 plt.show()
@@ -66,48 +76,104 @@ plt.show()
 The list of readings is a **discrete-time signal**. We write its values as
 $x[n]$, where the integer $n$ is the position in the list. The square brackets
 are a reminder that $n$ only takes integer values: there is no reading at day
-2.5.
+2.5. In @sec-discrete-time-signals we make this precise: a discrete-time signal
+is a function from the integers $\mathbb{Z}$ to the real (or complex) numbers.
 
 The grey curve is a **continuous-time signal**, written $x(t)$ with round
 brackets, because $t$ can be any real number. Physics happens in continuous
-time; computers only ever see lists.
+time; computers only ever see lists. Here the list is $x[n] = x(n)$: reading
+number $n$ is the value of the curve at day $n$.
 
 ### Processing: the average temperature
 
-What was the average temperature during the month? If we had the whole curve,
-calculus would give the answer as the area under the curve divided by the
-length of the interval:
+What was the average temperature during the month? With the whole curve, the
+answer is the mean value of $x$ over the interval $[0, T]$, with $T = 30$ days:
 
 $$
-\bar{x} = \frac{1}{T}\int_0^T x(t)\, dt .
+\bar{x} = \frac{1}{T}\int_0^T x(t)\, dt = 10 \text{ °C},
 $$
 
-With only the readings, the obvious answer is the arithmetic mean:
+because each oscillation in @eq-temperature completes a whole number of
+periods in 30 days and so integrates to zero. With only the readings, the
+obvious answer is the arithmetic mean of the samples:
 
 $$
 \hat{x} = \frac{1}{N}\sum_{n=0}^{N-1} x[n] .
 $$
 
-The second formula is something anybody can compute by hand. The surprising
-part is how close it is to the first one:
+How good is $\hat{x}$? Let us read the thermometer every $T_s$ days, for every
+$T_s$ that divides 30, and compare:
 
 ```{python}
-dense_average = true_temperature(t_fine).mean()    # numerical stand-in for the integral
-daily_average = readings.mean()
-
-weekly = np.arange(0, 30, 7)                       # read only on days 0, 7, 14, 21, 28
-weekly_average = true_temperature(weekly).mean()
-
-print(f"average of the continuous curve : {dense_average:6.3f} °C")
-print(f"average of 30 daily readings    : {daily_average:6.3f} °C")
-print(f"average of  5 weekly readings   : {weekly_average:6.3f} °C")
+print(" T_s   N    mean of readings")
+for Ts in [1, 2, 3, 5, 6, 10, 15, 30]:
+    t_n = np.arange(0, 30, Ts)                  # reading times 0, T_s, 2T_s, ...
+    print(f"{Ts:4d} {len(t_n):4d}    {true_temperature(t_n).mean():.12f}")
 ```
 
-Daily readings reproduce the true average almost exactly. Weekly readings do
-not, and the error is not just "fewer numbers, less precision". The curve
-contains a wiggle that repeats every 11 days; reading once a week is too slow
-to follow it, and the wiggle *disguises itself* as something else in the
-samples. This effect is called **aliasing** and it is the subject of the next
+The mean of the readings is *exactly* 10 (up to rounding errors in the 15th
+digit) for every interval except $T_s = 6$ and $T_s = 30$, where it is exactly
+11.5. The number of readings is not what matters: two readings, 15 days apart,
+are exact, and five readings, 6 days apart, are not. The next result explains
+why.
+
+::: {#prp-full-period-average}
+## Averages of a sampled cosine
+
+Let $N \geq 1$ and $k$ be integers and let $\varphi$ be a real number. Then
+
+$$
+\frac{1}{N}\sum_{n=0}^{N-1} \cos\!\left(\frac{2\pi k n}{N} + \varphi\right) =
+\begin{cases}
+\cos\varphi & \text{if } N \text{ divides } k,\\
+0 & \text{otherwise.}
+\end{cases}
+$$
+:::
+
+::: {.proof}
+If $N$ divides $k$, then $2\pi k n / N$ is a multiple of $2\pi$ and every term
+equals $\cos\varphi$. Otherwise write $\theta = 2\pi k / N$. Then
+$\sin(\theta/2) \neq 0$, because $\theta/2 = \pi k / N$ is not a multiple of
+$\pi$. The identity $2\sin a \cos b = \sin(b + a) - \sin(b - a)$ gives
+
+$$
+2\sin\tfrac{\theta}{2}\,\cos(\theta n + \varphi)
+= \sin\!\big(\theta(n + \tfrac12) + \varphi\big) - \sin\!\big(\theta(n - \tfrac12) + \varphi\big).
+$$
+
+Summing over $n = 0, \dots, N-1$, all intermediate terms cancel (the sum
+*telescopes*) and we are left with
+
+$$
+2\sin\tfrac{\theta}{2} \sum_{n=0}^{N-1}\cos(\theta n + \varphi)
+= \sin\!\big(\theta N - \tfrac{\theta}{2} + \varphi\big) - \sin\!\big(-\tfrac{\theta}{2} + \varphi\big) = 0,
+$$
+
+since $\theta N = 2\pi k$. Dividing by $2\sin(\theta/2) \neq 0$ proves the
+claim.
+:::
+
+Reading every $T_s$ days gives $N = 30/T_s$ samples at $t = nT_s$, and
+@eq-temperature becomes
+
+$$
+x[n] = 10 + 3\cos\!\left(\frac{2\pi \cdot 1 \cdot n}{N} - \frac{\pi}{2}\right)
++ 1.5\cos\!\left(\frac{2\pi \cdot 5 \cdot n}{N}\right),
+$$
+
+where we used $\sin\alpha = \cos(\alpha - \pi/2)$. By
+@prp-full-period-average, the slow term contributes
+$3\cos(-\pi/2) = 0$ to the mean for every $N$, and the fast term contributes
+$1.5$ if $N$ divides 5 and $0$ otherwise. So $\hat{x} = 11.5$ for $N = 5$
+($T_s = 6$) and $N = 1$ ($T_s = 30$), and $\hat{x} = 10$ exactly in every other
+case, as measured.
+
+The failure has a simple interpretation. Read every 6 days, the 6-day
+oscillation is caught at the same point of its cycle every time, so in the
+samples it looks like a *constant* and adds to the mean. A fast oscillation
+has disguised itself as something slower, here as something of frequency
+zero. This effect is called **aliasing**, and it is the subject of the next
 section.
 
 ## Discrete time: how often should we look?
@@ -116,7 +182,7 @@ Sampling means looking at a signal at regular intervals of $T_s$ seconds and
 writing down what we see:
 
 $$
-x[n] = x(n T_s).
+x[n] = x(n T_s), \qquad n \in \mathbb{Z}.
 $$
 
 The number of samples per second, $F_s = 1/T_s$, is the **sampling frequency**.
@@ -127,9 +193,9 @@ sinusoid that completes 3 cycles per second (3 Hz) at three different rates.
 
 ```{python}
 #| label: fig-sampling-rates
-#| fig-cap: "A 3 Hz sinusoid sampled at three rates. With 4 samples per second the samples trace a much slower, 1 Hz sinusoid (dashed): this is aliasing."
+#| fig-cap: "A 3 Hz sinusoid sampled at three rates. With 4 samples per second the samples coincide exactly with those of a 1 Hz sinusoid (dashed): this is aliasing."
 f0 = 3.0                                   # frequency of the signal, in Hz
-t = np.linspace(0, 2, 2000)                # 2 seconds of "continuous" time
+t = np.linspace(0, 2, 2001)                # 2 seconds, dense grid for drawing
 
 fig, axes = plt.subplots(3, 1, figsize=(7, 6), sharex=True)
 for ax, fs in zip(axes, [40, 8, 4]):
@@ -144,17 +210,115 @@ plt.show()
 ```
 
 With 40 samples per second the dots follow the curve closely. With 8, the dots
-are sparse but still clearly a 3 Hz oscillation. With 4, the dots are
-*exactly* those of a 1 Hz cosine: from the samples alone, nobody could tell the
-difference. You have seen this effect in films, when the wheels of a
-stagecoach seem to turn slowly backwards while the coach speeds up.
+are sparse but still trace a 3 Hz oscillation. With 4, the dots are exactly
+those of a 1 Hz cosine, and from the samples alone nobody could tell the
+difference. This is not an accident of the picture:
 
-@sec-sampling makes this precise. The key result, the **sampling theorem**,
-says that if a signal contains no frequencies above $f_{\max}$, sampling it at
-more than $2 f_{\max}$ samples per second loses *no information at all*: the
-continuous signal can be rebuilt exactly from its samples
-[@shannon1949]. This is why audio CDs use 44 100 samples per second: human
-hearing stops at about 20 000 Hz.
+::: {#prp-sampled-sinusoid-alias}
+## Aliasing of a sampled sinusoid
+
+Let $f$ and $\varphi$ be real, $F_s > 0$ and $k$ an integer. For every
+$n \in \mathbb{Z}$,
+
+$$
+\cos\!\left(2\pi \frac{f + kF_s}{F_s} n + \varphi\right)
+= \cos\!\left(2\pi \frac{f}{F_s} n + \varphi\right)
+= \cos\!\left(2\pi \frac{-f}{F_s} n - \varphi\right).
+$$
+:::
+
+::: {.proof}
+The first argument equals the second plus $2\pi k n$, a multiple of $2\pi$.
+The third equality holds because the cosine is even.
+:::
+
+So once sampled at rate $F_s$, a sinusoid of frequency $f$ is
+indistinguishable from sinusoids of frequencies $f + kF_s$ and $-f + kF_s$, for
+every integer $k$. Every frequency in this family can be brought into the
+interval $[0, F_s/2]$, so the samples always look like those of a sinusoid
+with a frequency in that interval. For the experiment above, $3 = -1 + 4$, so
+at $F_s = 4$ Hz the 3 Hz cosine produces the samples of a 1 Hz cosine.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: find the alias
+
+Choose a frequency `f0` and a sampling rate `fs`. The code computes the alias
+in $[0, F_s/2]$ predicted by @prp-sampled-sinusoid-alias and draws both
+sinusoids through the same samples. Try `f0 = 7, fs = 10` and `f0 = 9, fs = 10`.
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+f0, fs = 7.0, 10.0
+alias = abs(f0 - fs * np.round(f0 / fs))     # representative in [0, fs/2]
+
+t = np.linspace(0, 1, 1000)
+n = np.arange(int(fs) + 1)
+plt.plot(t, np.cos(2 * np.pi * f0 * t), color="0.7", label=f"{f0} Hz")
+plt.plot(t, np.cos(2 * np.pi * alias * t), "--", label=f"alias {alias} Hz")
+plt.plot(n / fs, np.cos(2 * np.pi * f0 * n / fs), "o", color="k", label="samples")
+plt.legend()
+plt.show()
+```
+:::
+::::
+
+The family of aliases is the reason for the most important result about
+sampling. We state it now and prove it in @sec-sampling, once Fourier analysis
+is available. "Frequencies present in a signal" will then have an exact
+meaning: the frequencies where its Fourier transform is not zero.
+
+::: {#thm-sampling-preview}
+## Sampling theorem [@shannon1949]
+
+Let $x(t)$ be a finite-energy signal that contains no frequencies above
+$f_{\max}$, that is, whose Fourier transform is zero outside
+$[-f_{\max}, f_{\max}]$. If $F_s > 2 f_{\max}$, then $x$ is determined by its
+samples $x[n] = x(nT_s)$, and for every real $t$
+
+$$
+x(t) = \sum_{n=-\infty}^{\infty} x[n]\, \operatorname{sinc}\!\left(\frac{t - nT_s}{T_s}\right),
+\qquad \operatorname{sinc}(u) = \frac{\sin(\pi u)}{\pi u},\ \operatorname{sinc}(0) = 1 .
+$$
+:::
+
+We can test the formula already. The signal $x(t) = \operatorname{sinc}^2(t)$
+has finite energy and contains no frequencies above $f_{\max} = 1$ Hz (we will
+verify this in @sec-sampling). We sample it, rebuild it between the samples
+with the formula, truncated to $|n| \le 2000$, and measure the worst error on a
+fine grid:
+
+```{python}
+def rebuild(samples, n, Ts, t):
+    """Evaluate the sinc interpolation formula at times t (truncated sum)."""
+    return np.sinc((t[:, None] - n[None, :] * Ts) / Ts) @ samples
+
+def x_band_limited(t):
+    return np.sinc(t) ** 2                 # NumPy's sinc is sin(pi u)/(pi u)
+
+t = np.linspace(-5, 5, 1001)
+n = np.arange(-2000, 2001)
+for fs in [2.5, 1.5]:                      # above and below 2 f_max = 2 Hz
+    Ts = 1 / fs
+    err = rebuild(x_band_limited(n * Ts), n, Ts, t) - x_band_limited(t)
+    print(f"F_s = {fs} Hz: max |error| = {np.abs(err).max():.1e}")
+```
+
+Above $2 f_{\max}$ the error is limited only by truncating the infinite sum.
+Below $2 f_{\max}$ the error is of the order of the signal itself, and
+adding more terms does not help.
+
+Two practical remarks complete the picture. First, no real signal satisfies
+the hypothesis exactly: a nonzero signal that lasts a finite time always
+contains arbitrarily high frequencies (@sec-sampling). This is why every
+sampler is preceded by an analog **anti-aliasing filter** that removes the
+frequencies above $F_s/2$ before they can alias. Second, that filter cannot
+go from passing everything to blocking everything at a single frequency, so
+$F_s$ is chosen with some margin above $2 f_{\max}$. Audio CDs use
+$F_s = 44\,100$ Hz: human hearing ends at about $20$ kHz, and the band from 20
+to 22.05 kHz gives the filter room to roll off.
 
 The practical consequence is huge. Once a signal is sampled fast enough, we
 can forget the continuous world and work only with lists of numbers. The time
@@ -163,22 +327,55 @@ for stock prices, sound or radio waves.
 
 ## Discrete amplitude: how precisely should we write it down?
 
-Sampling makes time discrete. The values are still real numbers with infinitely
-many decimals, which no computer can store. **Quantization** rounds each value
-to one of a finite set of levels. With $B$ bits we have $2^B$ levels.
+Sampling makes time discrete. The values are still real numbers, which a
+computer can only store with finite precision. **Quantization** maps each value
+to one of a finite set of levels. With $B$ bits there are $2^B$ levels.
+
+::: {#def-uniform-quantizer}
+## Uniform quantizer
+
+Let $x_{\min} < x_{\max}$, let $B \geq 1$ be an integer, $L = 2^B$ and
+$\Delta = (x_{\max} - x_{\min})/L$ (the **step**). Split
+$[x_{\min}, x_{\max}]$ into $L$ intervals of width $\Delta$, numbered
+$i = 0, \dots, L-1$. The uniform quantizer maps a real $x$ to the centre of
+its interval:
+
+$$
+Q(x) = x_{\min} + \left(i(x) + \tfrac12\right)\Delta, \qquad
+i(x) = \min\!\Big(\max\!\Big(\Big\lfloor \frac{x - x_{\min}}{\Delta}\Big\rfloor, 0\Big), L-1\Big).
+$$
+
+The difference $e = Q(x) - x$ is the **quantization error**.
+:::
 
 ```{python}
 def quantize(x, bits, x_min=-1.0, x_max=1.0):
-    """Round each value of x to the centre of one of 2**bits equal intervals."""
+    """Uniform quantizer of Definition 1.1."""
     levels = 2 ** bits
     step = (x_max - x_min) / levels
     index = np.clip(np.floor((x - x_min) / step), 0, levels - 1)
     return x_min + (index + 0.5) * step
 ```
 
+::: {#prp-quantization-error-bound}
+## The quantization error is at most half a step
+
+If $x_{\min} \leq x \leq x_{\max}$, then $|Q(x) - x| \leq \Delta/2$.
+:::
+
+::: {.proof}
+If $x < x_{\max}$, then $i = \lfloor (x - x_{\min})/\Delta \rfloor$ lies in
+$\{0, \dots, L-1\}$ and $x$ lies in $[x_{\min} + i\Delta, x_{\min} + (i+1)\Delta)$,
+an interval of width $\Delta$ whose centre is $Q(x)$. If $x = x_{\max}$, then
+$i(x) = L-1$ and $Q(x) = x_{\max} - \Delta/2$.
+:::
+
+Outside $[x_{\min}, x_{\max}]$ the quantizer **saturates** (*overload*) and the
+error grows without bound, so the range must be chosen to cover the signal.
+
 ```{python}
 #| label: fig-quantization
-#| fig-cap: "A sinusoid quantized with 3 bits (8 levels). The error (bottom) never exceeds half a step."
+#| fig-cap: "A sinusoid quantized with 3 bits (8 levels) on $[-1, 1]$. Since the signal stays in range, the error (bottom) never exceeds half a step, $\\Delta/2 = 0.125$ (dashed lines)."
 n = np.arange(60)
 x = 0.9 * np.sin(2 * np.pi * n / 30)
 xq = quantize(x, bits=3)
@@ -188,37 +385,66 @@ ax1.plot(n, x, "o", color="0.6", label="original")
 ax1.step(n, xq, where="mid", label="quantized (3 bits)")
 ax1.legend(loc="upper right")
 ax2.stem(n, xq - x, basefmt=" ")
+ax2.axhline(0.125, ls="--", color="0.5")
+ax2.axhline(-0.125, ls="--", color="0.5")
 ax2.set_ylabel("error")
 ax2.set_xlabel("$n$")
 plt.tight_layout()
 plt.show()
 ```
 
-Rounding introduces an error, but the error is under control: it is never
-larger than half the distance between levels, and every extra bit halves that
-distance. Engineers measure the quality of the result with the
-**signal-to-noise ratio** (SNR), the ratio between the power of the signal and
-the power of the error, usually given in decibels:
+The usual measure of the damage is the **signal-to-noise ratio**. For a signal
+and an error modelled as random variables $X$ and $E$, it is the ratio of their
+mean squares, often given in decibels:
 
 $$
-\text{SNR}_{\text{dB}} = 10 \log_{10}\frac{\text{signal power}}{\text{error power}} .
+\mathrm{SNR} = \frac{\mathbb{E}[X^2]}{\mathbb{E}[E^2]}, \qquad
+\mathrm{SNR}_{\mathrm{dB}} = 10 \log_{10} \mathrm{SNR}.
 $$
 
-Let us measure it for several numbers of bits:
+For one important case the SNR can be computed exactly.
+
+::: {#prp-six-db-per-bit}
+## Six decibels per bit
+
+Let $X$ be uniformly distributed on $[-1, 1]$ and let $Q$ be the $B$-bit uniform
+quantizer on $[-1, 1]$. Then the error $E = Q(X) - X$ is uniformly distributed on
+$[-\Delta/2, \Delta/2]$, and
+
+$$
+\mathrm{SNR} = 4^B, \qquad \mathrm{SNR}_{\mathrm{dB}} = 20\log_{10}(2)\, B \approx 6.02\, B .
+$$
+:::
+
+::: {.proof}
+Each of the $L$ intervals has probability $1/L$, and conditioned on being in
+interval $i$, $X$ is uniform on it. In that interval $E = c_i - X$, where $c_i$ is
+the centre, so $E$ is uniform on $[-\Delta/2, \Delta/2]$ whatever $i$ is. The
+unconditional distribution is therefore the same uniform distribution. Hence
+$\mathbb{E}[E^2] = \frac{1}{\Delta}\int_{-\Delta/2}^{\Delta/2} e^2\,de = \Delta^2/12$.
+Also $\mathbb{E}[X^2] = \frac12\int_{-1}^{1} x^2\,dx = 1/3$. With $\Delta = 2/2^B$,
+$\mathrm{SNR} = (1/3)\,/\,(4/(12 \cdot 4^B)) = 4^B$.
+:::
+
+The experiment agrees with the prediction, up to the statistical error of a
+finite sample:
 
 ```{python}
-x = rng.uniform(-1, 1, size=100_000)         # a signal that uses the whole range
+x = rng.uniform(-1, 1, size=1_000_000)
 
-print(" bits   SNR (dB)")
+print(" bits   measured SNR (dB)   6.02 B (dB)")
 for bits in [2, 4, 8, 12, 16]:
     error = quantize(x, bits) - x
     snr_db = 10 * np.log10(np.mean(x**2) / np.mean(error**2))
-    print(f"{bits:5d}  {snr_db:8.1f}")
+    print(f"{bits:5d}  {snr_db:14.2f}  {20 * np.log10(2) * bits:14.2f}")
 ```
 
-Each extra bit adds about 6 dB: this is the famous **6 dB per bit** rule,
-derived in @sec-quantization. A CD uses 16 bits, about 96 dB, which is roughly
-the distance between a quiet room and a painfully loud concert.
+Each extra bit halves $\Delta$, divides the error power by 4 and so adds
+$10\log_{10}4 \approx 6.02$ dB. For signals that are not uniformly distributed
+the error is no longer exactly uniform, and @sec-quantization studies when the
+uniform model is still a good approximation; for a full-scale sinusoid it
+leads to the well-known figure $6.02B + 1.76$ dB. A CD, with 16 bits, is
+therefore in the region of 96 to 98 dB.
 
 :::: {.content-visible when-format="html"}
 ::: {.callout-tip}
@@ -226,6 +452,7 @@ the distance between a quiet room and a painfully loud concert.
 
 This code runs in your browser. Change `bits` and press **Run Code**. How many
 bits do you need before the quantized curve and the original look the same?
+Compare the SNR printed in the title with $6.02B + 1.76$ dB.
 
 ```{.pyodide}
 import numpy as np
@@ -247,13 +474,14 @@ plt.show()
 :::
 ::::
 
-Quantization, unlike sampling, always loses something. That is acceptable
+Quantization, unlike sampling, always loses information: $Q$ maps infinitely
+many values to each level, so it cannot be inverted. The loss is acceptable
 because every measurement is already imprecise: a thermometer, a microphone or
-an amplifier adds its own noise. If the quantization error is smaller than the
-noise that is already there, nobody can notice it. Most of the theory in this
-book ignores quantization and treats samples as real numbers. To be precise we
-should then talk about **discrete-time** signal processing and keep the word
-*digital* for real devices, but in practice both names are used.
+an amplifier adds its own noise. If the quantization error power is well below
+the power of that noise, quantization makes no practical difference. Most of
+the theory in this book ignores quantization and treats samples as real (or
+complex) numbers. Strictly speaking, that theory is *discrete-time* signal
+processing, and *digital* refers to real devices, but both names are used.
 
 ## Why bother? Noise and copies
 
@@ -262,19 +490,24 @@ numbers can be copied, stored and transmitted **without degradation**.
 
 Think about a long cable that carries a signal across an ocean. The cable
 weakens the signal, so every few kilometres a *repeater* has to boost it again.
-Each stretch of cable also adds a bit of noise. An analog repeater amplifies
-everything it receives, including the noise picked up so far, so noise
-accumulates along the way.
+Each stretch of cable also adds noise. We model the link as follows.
 
-A digital link sends bits as two voltage levels, $+1$ and $-1$. A digital
-repeater does not amplify what it receives: it decides whether each value is
-above or below zero and sends a *fresh*, clean $\pm 1$. As long as the noise
-in a single stretch is not large enough to flip a decision, the signal arrives
-perfect, no matter how many repeaters there are.
+::: {#def-repeater-chain}
+## A chain of repeaters
+
+A symbol $s_0 \in \{-1, +1\}$ is sent through $K$ stages. Stage $k$ receives
+$r_k = a\,s_{k-1} + w_k$, where $0 < a < 1$ is the attenuation of the cable and
+the noise values $w_1, \dots, w_K$ are independent Gaussian random variables
+with mean 0 and variance $\sigma^2$. Then:
+
+- an **analog repeater** amplifies: $s_k = r_k / a$;
+- a **digital repeater** regenerates: $s_k = +1$ if $r_k \geq 0$ and $s_k = -1$
+  otherwise.
+:::
 
 ```{python}
 def send_through_link(signal, stages, digital, attenuation=0.5, noise_std=0.1):
-    """Pass a signal through a chain of cable stretches, each followed by a repeater."""
+    """Pass a signal through the chain of Definition 1.2 (all samples independently)."""
     s = signal.copy()
     for _ in range(stages):
         received = attenuation * s + rng.normal(0, noise_std, size=s.shape)
@@ -306,22 +539,77 @@ plt.tight_layout()
 plt.show()
 ```
 
+The picture can be made quantitative. Write $\mathcal{Q}(z) = P(Z > z)$ for the
+tail probability of a standard Gaussian variable $Z$.
+
+::: {#prp-repeaters}
+## Analog versus digital repeaters
+
+In the model of @def-repeater-chain:
+
+1. With analog repeaters, $s_K = s_0 + \frac{1}{a}\sum_{k=1}^{K} w_k$: the
+   output is the input plus Gaussian noise of variance $K\sigma^2/a^2$. If the
+   receiver decides by the sign of $s_K$, it is wrong with probability
+   $\mathcal{Q}\big(a/(\sigma\sqrt{K})\big)$.
+2. With digital repeaters, each stage flips the symbol with probability
+   $p = \mathcal{Q}(a/\sigma)$, independently of the other stages, and the
+   final symbol is wrong with probability
+   $$
+   P_K = \frac{1 - (1 - 2p)^K}{2} \;\leq\; K p .
+   $$
+:::
+
+::: {.proof}
+(1) By induction, $s_k = s_{k-1} + w_k/a = s_0 + \frac1a\sum_{j\le k} w_j$. A sum
+of independent Gaussians is Gaussian and the variances add. The decision is
+wrong when the noise has the sign opposite to $s_0$ and magnitude above 1, which
+by symmetry has probability $P(Z > a/(\sigma\sqrt{K}))$.
+
+(2) If $s_{k-1} = +1$, the stage errs when $a + w_k < 0$, that is, when
+$w_k < -a$, with probability $\mathcal{Q}(a/\sigma)$; the case $s_{k-1} = -1$
+is symmetric. The events depend on different $w_k$, so they are independent.
+The output is wrong when the number of flips is odd. With $q = 1 - p$, the
+binomial theorem gives $(q + p)^K - (q - p)^K = 2\sum_{j \text{ odd}}
+\binom{K}{j} p^j q^{K-j}$, which is the formula for $P_K$. The bound follows
+from $P(\bigcup_k A_k) \le \sum_k P(A_k)$, since an odd number of flips needs
+at least one.
+:::
+
+With the values of the figure ($a = 0.5$, $\sigma = 0.1$, $K = 10$) the
+difference is dramatic. We compare the formulas with a simulation of one
+million symbols:
+
 ```{python}
-received_bits = (digital_out[::20] > 0).astype(int)
-print("bit errors after 10 digital repeaters:", np.sum(received_bits != bits))
+a, sigma, K = 0.5, 0.1, 10
+Qf = stats.norm.sf                                 # Q(z) = P(Z > z)
+
+p = Qf(a / sigma)
+predicted_analog = Qf(a / (sigma * np.sqrt(K)))
+predicted_digital = (1 - (1 - 2 * p) ** K) / 2
+
+symbols = rng.choice([-1.0, 1.0], size=1_000_000)
+measured_analog = np.mean(np.sign(send_through_link(symbols, K, digital=False)) != symbols)
+measured_digital = np.mean(send_through_link(symbols, K, digital=True) != symbols)
+
+print(f"analog : predicted {predicted_analog:.2e}, measured {measured_analog:.2e}")
+print(f"digital: predicted {predicted_digital:.2e}, measured {measured_digital:.2e}")
 ```
 
-The same reasoning explains why a copy of a copy of a music file sounds
-exactly like the original, while a copy of a copy of a cassette tape gets
-noisier every time. It is also the reason why modern systems, even radios,
-move to the digital domain as early as possible and come back to the analog
-world only at the very end.
+The analog link gets about one symbol in twenty wrong. The digital link is
+expected to make about three errors in a million symbols, so a measurement of
+a few errors, or none, is consistent with the prediction. Adding stages makes
+the analog error probability tend to $1/2$, which means pure guessing, while the
+digital one grows at most linearly, with a tiny slope $p$.
 
-Real channels are noisier than this example, and occasionally a decision is
-wrong. Error-correcting codes add a little redundancy so that the receiver can
-detect and fix those mistakes; this is the domain of information theory
-[@shannon1948]. In @sec-modem we build a complete digital transmitter and
-receiver and measure how often it makes mistakes.
+The same reasoning explains why a copy of a copy of a music file is identical
+to the original, while a copy of a copy of a cassette tape gets noisier every
+time. It is also the reason why modern systems, even radios, move to the
+digital domain as early as possible and come back to the analog world only at
+the very end. When an occasional wrong decision is not acceptable,
+error-correcting codes add redundancy so that the receiver can detect and fix
+it; this is the domain of information theory [@shannon1948]. In @sec-modem we
+build a complete digital transmitter and receiver and measure how often it
+makes mistakes.
 
 ## The big picture
 
@@ -331,7 +619,7 @@ A typical DSP system looks like this:
 #| label: fig-dsp-chain
 #| fig-cap: "The structure of almost every DSP system. Everything between the A/D and D/A converters is a program working on lists of numbers."
 #| echo: false
-blocks = ["analog\nfilter", "sampler", "quantizer", "digital\nprocessing", "D/A\nconverter"]
+blocks = ["anti-alias\nfilter", "sampler", "quantizer", "digital\nprocessing", "D/A\nconverter"]
 fig, ax = plt.subplots(figsize=(8, 1.6))
 for i, label in enumerate(blocks):
     x0 = 1.2 + i * 1.5
@@ -348,36 +636,57 @@ ax.set_xlim(-0.6, 10.3); ax.set_ylim(0, 1); ax.axis("off")
 plt.show()
 ```
 
-The sampler and the quantizer form the **A/D converter** (analog to digital).
-The middle block is just a program. The **D/A converter** at the end turns
-numbers back into a voltage. Most of this book lives in the middle block, where
-everything is a list of numbers; Part IV returns to the edges.
+The anti-aliasing filter removes the frequencies above $F_s/2$; the sampler
+and the quantizer form the **A/D converter** (analog to digital). The middle
+block is just a program. The **D/A converter** at the end turns numbers back
+into a voltage. Most of this book lives in the middle block, where everything
+is a list of numbers; Part IV returns to the edges.
 
 ## Summary
 
-- A discrete-time signal is a list of numbers $x[n]$ indexed by an integer.
-- **Sampling** makes time discrete. If it is fast enough (more than twice the
-  highest frequency in the signal) nothing is lost; if it is too slow,
-  frequencies disguise themselves as others (**aliasing**).
-- **Quantization** makes values discrete. It always adds a small error, about
-  6 dB less noise for each extra bit.
-- Digital signals can be copied and transmitted without accumulating noise,
-  which is the main reason the world went digital.
+- A discrete-time signal is a list of numbers $x[n]$ indexed by an integer;
+  sampling a continuous-time signal gives one by $x[n] = x(nT_s)$.
+- After sampling at rate $F_s$, the frequencies $f$, $f + kF_s$ and $-f + kF_s$
+  produce the same samples (@prp-sampled-sinusoid-alias): this is
+  **aliasing**. A mean computed from samples can be biased by a component
+  that aliases to frequency zero (@prp-full-period-average).
+- The **sampling theorem** (@thm-sampling-preview): a finite-energy signal
+  without frequencies above $f_{\max}$ is determined by samples taken at
+  $F_s > 2 f_{\max}$, and the sinc formula rebuilds it.
+- **Quantization** to $B$ bits has an error of at most half a step inside the
+  range (@prp-quantization-error-bound); for a uniformly distributed input
+  the SNR is exactly $6.02B$ dB (@prp-six-db-per-bit).
+- Regeneration stops noise from accumulating: over $K$ stages, the error
+  probability of a digital link is at most $K$ times that of one stage
+  (@prp-repeaters), while an analog link loses SNR linearly in $K$.
 
 ## Exercises
 
-1. In the temperature example, read the thermometer every 2, 3, 5 and 10 days
-   and compute the average each time. Which sampling intervals give an
-   accurate average? Can you relate the answer to the 11-day wiggle?
-2. Sample a 3 Hz cosine at $F_s = 5$ Hz. Which slower cosine produces exactly
-   the same samples? Check your answer by plotting both. Repeat with
-   $F_s = 2.5$ Hz.
-3. Repeat the SNR measurement with a sinusoid of amplitude 1 instead of a
-   uniform random signal. By how many decibels does the result change? What
-   happens with a sinusoid of amplitude 0.1?
-4. In the repeater simulation, increase `noise_std` until the digital link
-   starts making errors. Plot the number of bit errors as a function of
-   `noise_std`. What happens to the analog link at the same noise level?
-5. A temperature sensor has an accuracy of $\pm 0.1$ °C over a range of
-   $-40$ °C to $+60$ °C. How many bits are enough to store its readings without
-   making them worse?
+1. **Exact averages.** For the temperature model @eq-temperature, use
+   @prp-full-period-average to find all sampling intervals $T_s$ that divide
+   30 and give $\hat{x} = 10$ exactly. Then replace the 6-day oscillation by a
+   7-day one. Is the mean of the readings still exact for daily readings?
+   Explain the answer, then check it numerically.
+2. **Aliases.** Sample a 3 Hz cosine at $F_s = 5$ Hz. Find the frequency in
+   $[0, F_s/2]$ that produces the same samples, and prove your answer with
+   @prp-sampled-sinusoid-alias. Repeat with $F_s = 2.5$ Hz and check both
+   results by plotting.
+3. **Sine instead of cosine.** Show that $\sin(2\pi f n/F_s)$ and
+   $\sin(2\pi(F_s - f) n/F_s)$ have opposite signs for every $n$. What does
+   this say about the phase of an alias?
+4. **SNR of a sinusoid.** Repeat the SNR measurement with
+   $x[n] = \cos(\omega_0 n)$ for $\omega_0 = 0.1$ and $B = 4, 8, 12, 16$.
+   Compare the result with $6.02B + 1.76$ dB. What happens with amplitude
+   $0.1$ instead of 1? Express the loss in dB as a function of the amplitude.
+5. **Overload.** For $X$ Gaussian with mean 0 and standard deviation $s$,
+   quantized with 8 bits on $[-1, 1]$, plot the measured SNR as a function of
+   $s \in [0.01, 2]$. Explain the maximum: what limits the SNR for small $s$,
+   and what for large $s$?
+6. **Repeaters.** Using @prp-repeaters with $a = 0.5$, find the largest
+   $\sigma$ for which a 100-stage digital link has an error probability below
+   $10^{-6}$. With the same $\sigma$, what is the error probability of the
+   analog link? Verify both numbers by simulation.
+7. **Bits for a sensor.** A temperature sensor covers $-40$ °C to $+60$ °C with
+   an accuracy of $\pm 0.1$ °C. Find the smallest $B$ such that the
+   quantization error never exceeds $0.05$ °C, a quarter of the width of the
+   sensor's uncertainty interval.

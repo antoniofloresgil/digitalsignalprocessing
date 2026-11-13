@@ -3,10 +3,16 @@
 ## Scope and audience
 
 - The book is written in English. Code is Python (NumPy, SciPy, Matplotlib).
-- Readers are final-year computer science students with little background in
-  complex analysis or transforms. Introduce every mathematical tool from
-  scratch, only as far as the book needs it. Prefer a numerical experiment to
-  a proof.
+- Readers are final-year computer science students. Assume first-course
+  calculus, linear algebra and probability, but no complex analysis or
+  transforms. Introduce every mathematical tool from scratch, only as far as
+  the book needs it.
+- Be mathematically rigorous. Define objects precisely and state results with
+  their hypotheses in Quarto blocks (`::: {#def-...}`, `{#prp-...}`,
+  `{#thm-...}`, `{#lem-...}`, `::: {.proof}`). Prove a result when the proof
+  needs only tools already introduced; otherwise state it exactly and point to
+  where it is proved. Never present a heuristic as a theorem. Back every
+  result with a numerical experiment.
 - Prandoni & Vetterli, *Signal Processing for Communications*, is the
   structural guide. Never copy its text, figures or exercises; write original
   explanations, examples and code, and cite it where an idea is borrowed.

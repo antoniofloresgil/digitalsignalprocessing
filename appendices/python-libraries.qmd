@@ -1,0 +1,231 @@
+# A Short Guide to the Python Libraries {#sec-python-libraries}
+
+This appendix collects what the book uses from NumPy, Matplotlib and SciPy,
+with the conventions and pitfalls that matter for signal processing. It is
+not a tutorial on Python itself. Every cell runs, so it doubles as a test that
+the container has what the book needs.
+
+```{python}
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+import scipy
+from scipy import signal, stats
+
+print("NumPy", np.__version__, "| SciPy", scipy.__version__, "| Matplotlib", matplotlib.__version__)
+```
+
+## NumPy: arrays of samples
+
+[NumPy](https://numpy.org/doc/stable/) provides the `ndarray`, a block of
+numbers of one type stored contiguously, and fast functions that act on whole
+arrays at once. A finite-length signal is a one-dimensional array.
+
+### Creating arrays
+
+| call | result | typical use |
+|------|--------|-------------|
+| `np.arange(N)` | `0, 1, …, N-1` (integers) | sample indices $n$ |
+| `np.arange(a, b)` | `a, …, b-1` | an index window; `b` is excluded |
+| `np.linspace(a, b, K)` | `K` equally spaced floats, `b` included | a dense time grid for drawing |
+| `np.zeros(N)`, `np.ones(N)` | constant arrays | buffers, steps |
+| `np.array([...])` | from a list | short hand-written signals |
+
+```{python}
+n = np.arange(8)
+x = np.cos(2 * np.pi * n / 8)        # one period of a sinusoid, 8 samples
+print(n)
+print(x.round(3))
+```
+
+Two pitfalls. `np.arange` with a non-integer step accumulates rounding errors,
+so the number of points is hard to predict: use integer indices and scale them
+(`n / fs`), or use `np.linspace`. And `np.linspace(0, 1, 10)` has spacing
+$1/9$, not $1/10$, because both ends are included; pass `endpoint=False` when
+you want a period without repeating its first point.
+
+### Vectorised operations
+
+Arithmetic and mathematical functions act element by element, without Python
+loops. This is both shorter and much faster:
+
+```{python}
+n = np.arange(1_000_000)
+x = 0.9 ** n * np.cos(0.1 * n)          # the whole signal in one line
+energy = np.sum(np.abs(x) ** 2)
+print(f"energy ≈ {energy:.4f}")
+```
+
+Comparisons give Boolean arrays, which make piecewise definitions easy:
+`np.where(n >= 0, 1.0, 0.0)` is the unit step on the window `n`.
+
+### Indexing and slicing
+
+| expression | meaning |
+|------------|---------|
+| `x[0]`, `x[-1]` | first and last element |
+| `x[a:b]` | elements `a` to `b-1` (a view, not a copy) |
+| `x[::M]` | every `M`-th element: down-sampling by `M` |
+| `x[::-1]` | reversed array |
+| `x[mask]` | elements where the Boolean array `mask` is true |
+
+Array index 0 is always the first element. When an array stores the window
+$M \le n \le M + N - 1$ of a signal, sample $x[n]$ is `x[n - M]`. Forgetting
+this offset is the most common source of off-by-one errors in DSP code.
+
+Slices are *views*: `y = x[::2]; y[0] = 5` changes `x` too. Use `.copy()` when
+you want an independent array.
+
+### Functions used in the book
+
+| function | what it computes | in the book |
+|----------|------------------|-------------|
+| `np.cumsum(x)` | running sums | accumulation, @sec-discrete-time-signals |
+| `np.diff(x, prepend=0)` | first differences | first difference |
+| `np.roll(x, k)` | circular shift by `k` | periodic signals, the DFT |
+| `np.convolve(x, h)` | linear convolution | @sec-lti |
+| `np.dot(x, y)`, `x @ y` | inner product, matrix product | @sec-signals-as-vectors |
+| `np.vdot(x, y)` | inner product, conjugating `x` | complex signals |
+| `np.fft.fft`, `np.fft.ifft` | DFT and inverse DFT | @sec-dft |
+| `np.fft.fftfreq(N, d)` | frequencies of the DFT bins | spectral plots |
+| `np.allclose(a, b)` | equality up to rounding errors | checks and tests |
+
+```{python}
+x = np.array([1.0, 2.0, 3.0, 4.0])
+print("roll  :", np.roll(x, 1))                    # last sample comes in first
+print("cumsum:", np.cumsum(x))
+print("diff  :", np.diff(x, prepend=0))            # undoes cumsum
+print("conv  :", np.convolve(x, [1, 1]))           # length 4 + 2 - 1 = 5
+```
+
+### Complex numbers
+
+Python writes the imaginary unit as `1j`. Arrays can be complex, and NumPy
+provides `np.real`, `np.imag`, `np.abs`, `np.angle` (in radians, in
+$(-\pi, \pi]$) and `np.conj`. `np.exp(1j * w * n)` is a complex exponential
+signal, the protagonist of Part II.
+
+```{python}
+z = np.exp(1j * np.pi / 3)
+print(z, abs(z), np.angle(z), np.pi / 3)
+```
+
+### Floating point
+
+Computations with real numbers are approximate. Never test results with `==`:
+
+```{python}
+print(0.1 + 0.2 == 0.3, np.isclose(0.1 + 0.2, 0.3))
+print(np.sin(np.pi))            # not exactly 0
+```
+
+The book checks results with `np.allclose` and, where a result should be exact
+(integers, indices), with `np.array_equal`.
+
+### Random numbers
+
+Always create a generator with a fixed **seed** and draw from it, so that a
+"random" experiment gives the same result every time the book is built:
+
+```{python}
+rng = np.random.default_rng(1234)
+print(rng.normal(0, 1, size=3))        # Gaussian, mean 0, standard deviation 1
+print(rng.uniform(-1, 1, size=3))      # uniform on [-1, 1)
+print(rng.integers(0, 2, size=8))      # random bits
+```
+
+The older functions `np.random.randn`, `np.random.seed` and friends use a
+hidden global state; the book does not use them.
+
+## Matplotlib: plotting signals
+
+[Matplotlib](https://matplotlib.org/stable/) draws every figure in the book. We
+always use its object-oriented interface: create a figure and its axes with
+`plt.subplots`, then call methods on the axes.
+
+| call | draws | use it for |
+|------|-------|-----------|
+| `ax.stem(n, x)` | a vertical line and a dot per sample | discrete-time signals |
+| `ax.plot(t, x)` | points joined by lines | continuous-time signals, long signals |
+| `ax.step(n, x, where="mid")` | a staircase | quantized and held signals |
+| `ax.semilogy`, `ax.loglog` | logarithmic axes | errors, convergence |
+| `ax.axhline`, `ax.axvline` | horizontal or vertical lines | thresholds, reference levels |
+
+```{python}
+#| label: fig-python-plot-example
+#| fig-cap: "Stem plot of a sampled sinusoid over the continuous curve: the basic figure of the book, in six lines."
+n = np.arange(16)
+t = np.linspace(0, 15, 500)
+fig, ax = plt.subplots(figsize=(7, 2.5))
+ax.plot(t, np.cos(2 * np.pi * t / 8), color="0.7")
+ax.stem(n, np.cos(2 * np.pi * n / 8), basefmt=" ")
+ax.set_xlabel("$n$")
+ax.set_ylabel("$x[n]$")
+plt.show()
+```
+
+Labels accept LaTeX between dollar signs, as in `"$x[n]$"`. Use raw strings,
+`r"$\omega_0$"`, when a label contains backslashes. `plt.subplots(2, 1,
+sharex=True)` stacks plots that share the time axis, and `plt.tight_layout()`
+stops labels from overlapping. Outside this book, `fig.savefig("name.pdf")`
+writes a figure to a file.
+
+## SciPy: signal processing and statistics
+
+[SciPy](https://docs.scipy.org/doc/scipy/) builds on NumPy. The book uses two of
+its modules.
+
+### `scipy.signal`
+
+| function | purpose | in the book |
+|----------|---------|-------------|
+| `signal.lfilter(b, a, x)` | run a filter given by its difference equation | @sec-lti, @sec-z-transform |
+| `signal.freqz(b, a)` | frequency response of a filter | @sec-filter-design |
+| `signal.tf2zpk(b, a)` | poles and zeros | @sec-z-transform |
+| `signal.firwin`, `signal.remez` | FIR filter design | @sec-filter-design |
+| `signal.butter`, `signal.cheby1`, `signal.ellip` | IIR filter design | @sec-filter-design |
+| `signal.welch`, `signal.spectrogram` | spectral estimation | @sec-spectral-analysis, @sec-noise |
+| `signal.resample_poly` | rate conversion | @sec-multirate |
+
+Filters are described, as in most of the literature, by two coefficient arrays:
+`b` for the numerator (the inputs) and `a` for the denominator (the past
+outputs), with `a[0] = 1`. For example, the running average of 4 samples:
+
+```{python}
+b, a = np.ones(4) / 4, [1.0]
+x = np.r_[np.zeros(3), np.ones(6)]              # a step that starts at n = 3
+print(signal.lfilter(b, a, x))
+```
+
+### `scipy.stats`
+
+Probability distributions are objects with methods: `pdf` (density), `cdf`
+(distribution function), `sf` (tail, $1 - \mathrm{cdf}$), `ppf` (quantiles)
+and `rvs` (samples). @sec-what-is-dsp uses the Gaussian tail
+$\mathcal{Q}(z) = P(Z > z)$:
+
+```{python}
+print(stats.norm.sf(3.0))          # Q(3) ≈ 1.35e-3
+print(stats.norm.ppf(0.975))       # the 97.5 % quantile ≈ 1.96
+```
+
+`sf` is accurate far in the tail, where `1 - cdf` would lose all its digits to
+rounding: compare `stats.norm.sf(10)` with `1 - stats.norm.cdf(10)`.
+
+## In the browser: Pyodide
+
+The *Try it* boxes of the HTML edition run [Pyodide](https://pyodide.org), a
+version of Python compiled to WebAssembly, which includes NumPy, SciPy and
+Matplotlib. Each box is independent: it imports what it needs and does not see
+variables defined elsewhere in the chapter. Pyodide's library versions can be
+slightly older than the container's, so very recent functions may be missing
+there.
+
+## Further reading
+
+- *NumPy user guide*, especially "NumPy: the absolute basics for beginners" and
+  "Broadcasting": <https://numpy.org/doc/stable/user/>.
+- *Matplotlib quick start guide*:
+  <https://matplotlib.org/stable/users/explain/quick_start.html>.
+- *SciPy signal processing tutorial*:
+  <https://docs.scipy.org/doc/scipy/tutorial/signal.html>.

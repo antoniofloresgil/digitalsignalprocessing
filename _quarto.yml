@@ -46,6 +46,7 @@ book:
   appendices:
     - appendices/running-the-code.qmd
     - appendices/math-toolbox.qmd
+    - appendices/python-libraries.qmd
 
 bibliography: references.bib
 date-format: iso

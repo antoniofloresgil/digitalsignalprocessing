@@ -48,3 +48,20 @@
   `tools/filters/part-titles.lua` drops the "I." prefix that LaTeX already
   numbers.
 - **No dark HTML theme**, matching the other book's single paper-toned theme.
+
+## 2026-11-13: rigour and practice
+
+- **Rigorous, but from scratch.** The author asked for a rigorous book. The
+  audience is unchanged (no complex analysis or transforms assumed), but first
+  courses in calculus, linear algebra and probability are. Results use Quarto
+  theorem blocks (`def`, `prp`, `thm`, `lem`, `exm`, `.proof`), are proved when
+  the tools are available, and are always paired with a runnable experiment.
+- **Executable checks.** Chapters use `assert` to verify the results they
+  state; a failing assertion fails the build, so the book is its own test.
+- **Signals as Python functions.** Chapter 2 represents an infinite sequence
+  as a function of an integer array, and operators as higher-order functions.
+  Arrays appear only with an explicit extension rule (periodic or zero).
+- **No Unicode math in captions.** Greek letters and sub/superscripts in
+  `fig-cap` end up in hyperref labels, which XeLaTeX never sees as stable, so
+  every build ran LaTeX ten times. Captions use `$...$` math instead.
+- **Python library guide** as the last appendix (`appendices/python-libraries.qmd`).

@@ -1,20 +1,1044 @@
 # Discrete-Time Signals {#sec-discrete-time-signals}
 
-A signal is just a list of numbers indexed by an integer. This chapter builds the vocabulary used in the rest of the book.
+@sec-what-is-dsp obtained discrete-time signals by sampling physical
+quantities. From now on we take the opposite point of view: a discrete-time
+signal is a mathematical object in its own right, whatever produced it. Many
+signals in communications are never sampled at all; they are *synthesised*
+by a program and only become physical at the very end.
 
-::: {.callout-note}
-## Draft chapter
-This chapter is planned but not yet written. The outline below is the
-working plan.
+This chapter defines that object, the basic signals and the operations on
+them, and the two numbers that measure the size of a signal: energy and
+power. It also sorts signals into classes, finite, periodic and infinite, and
+shows how each class is represented in code. The approach follows Chapter 2 of
+@prandoni2008, with our own examples and proofs.
+
+By the end of the chapter you should be able to:
+
+- define a discrete-time signal and the impulse, step, exponential and
+  sinusoid;
+- explain why digital frequency lives in $[0, \pi]$ and when a discrete
+  sinusoid is periodic;
+- apply and compose shifts, reversals, down- and up-sampling, accumulation and
+  differences, and know which ones can be undone;
+- split a signal into even and odd parts;
+- compute energy and power, and decide which one is the right measure;
+- represent finite, periodic and finite-support signals in NumPy and relate
+  `np.roll` to shifting a periodic signal.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+
+rng = np.random.default_rng(2)
+plt.rcParams["figure.figsize"] = (7, 3)
+
+def stem(ax, n, values, title=None, **kw):
+    """Lollipop plot of a discrete-time signal over the indices n."""
+    ax.stem(n, values, basefmt=" ", **kw)
+    ax.axhline(0, color="0.8", lw=0.8)
+    if title:
+        ax.set_title(title, fontsize=10)
+```
+
+## Signals as sequences
+
+::: {#def-discrete-time-signal}
+## Discrete-time signal
+
+A **discrete-time signal** is a function $x\colon \mathbb{Z} \to \mathbb{C}$.
+Its value at the integer $n$ is written $x[n]$ and called the $n$-th
+**sample**. A signal is **real** if all its values are real.
 :::
 
-## Planned contents
+Three remarks on the definition:
 
-- Sequences and the `x[n]` notation; why the index has no units
-- The basic building blocks: impulse, unit step, exponential, sinusoid
-- Shifting, scaling, adding and multiplying signals in NumPy
-- Energy and power
-- Finite-length, periodic and infinite signals, and how code represents each one
-- Transforming the time axis: reversal, shifting, compression and expansion of the index
-- Even and odd parts of a signal
-- A short look at continuous-time signals and how they compare with discrete ones
+- The index $n$ has **no units**. It orders the samples in time, but the time
+  between samples, if there ever was one, is not part of the signal. This is
+  what makes the same algorithm valid for sound sampled at 44.1 kHz and for
+  daily prices.
+- The definition is **two-sided and infinite**: $x[n]$ exists for every
+  integer, negative ones included. A recording with a beginning and an end is
+  handled by saying what happens outside it (@sec-signal-classes).
+- Values are **complex** in general. Physical quantities are real, but complex
+  signals make the analysis of oscillations much simpler, as
+  @sec-complex-numbers will show. In this chapter all examples are real; all
+  definitions are written so that they also apply to complex signals.
+
+Two equal signals are equal *as functions*: $x = y$ means $x[n] = y[n]$ for
+every $n \in \mathbb{Z}$. An array of numbers is not yet a signal, because it
+does not say which index its first element has, nor what happens outside it.
+
+### Signals in code
+
+A NumPy array can only hold finitely many values, so it cannot store a
+function on $\mathbb{Z}$. A Python *function* can. In this chapter a signal is
+a Python function that takes an array of integer indices and returns the
+array of values. The definition is then copied almost literally, and we
+only choose a finite window of indices when we plot or print:
+
+```{python}
+def x_example(n):
+    """x[n] = 0.95^|n| cos(pi n / 8), defined for every integer n."""
+    return 0.95 ** np.abs(n) * np.cos(np.pi * n / 8)
+
+n = np.arange(-5, 6)
+print(x_example(n).round(3))
+```
+
+Signals come from formulas, from measurements and from random sources. Here is
+one of each:
+
+```{python}
+#| label: fig-sequence-examples
+#| fig-cap: "Three discrete-time signals: one given by a formula (top), one built from data (middle, the daily number of new users of a web service) and one random (bottom, independent Gaussian samples)."
+daily_users = rng.poisson(lam=40 + 25 * np.sin(2 * np.pi * np.arange(60) / 7) ** 2)
+
+def users(n):
+    """Measured data for days 0..59, and 0 outside the measurement."""
+    inside = (n >= 0) & (n < 60)
+    return np.where(inside, daily_users[np.clip(n, 0, 59)], 0)
+
+fig, axes = plt.subplots(3, 1, figsize=(7, 6))
+stem(axes[0], np.arange(-30, 31), x_example(np.arange(-30, 31)), "formula")
+stem(axes[1], np.arange(-5, 65), users(np.arange(-5, 65)), "data")
+stem(axes[2], np.arange(0, 60), rng.normal(size=60), "random")
+plt.tight_layout()
+plt.show()
+```
+
+Stem plots stress that a signal exists only at integers. When there are many
+samples, we often join them with lines to make the plot easier to read; the
+line between two samples is then a drawing aid, not part of the signal.
+
+## Basic signals
+
+The following signals are the building blocks of the theory.
+
+::: {#def-basic-signals}
+## Impulse, unit step, exponential and sinusoid
+
+- The **impulse** (or unit sample) is $\delta[n] = 1$ if $n = 0$ and
+  $\delta[n] = 0$ otherwise.
+- The **unit step** is $u[n] = 1$ if $n \geq 0$ and $u[n] = 0$ otherwise.
+- For a constant $a \in \mathbb{C}$, the **one-sided exponential** is
+  $x[n] = a^n u[n]$.
+- For real $A > 0$, $\omega_0$ and $\varphi$, the **real sinusoid** is
+  $x[n] = A\cos(\omega_0 n + \varphi)$. The parameters are its
+  **amplitude**, **digital frequency** (in radians per sample) and
+  **phase**.
+:::
+
+```{python}
+def delta(n):
+    return np.where(n == 0, 1.0, 0.0)
+
+def step(n):
+    return np.where(n >= 0, 1.0, 0.0)
+
+def exponential(a):
+    return lambda n: np.where(n >= 0, a ** np.maximum(n, 0), 0.0)
+
+def sinusoid(A, w0, phi):
+    return lambda n: A * np.cos(w0 * n + phi)
+```
+
+```{python}
+#| label: fig-basic-signals
+#| fig-cap: "The basic signals: impulse, unit step, one-sided exponential with $a = 0.8$ and a sinusoid with $\\omega_0 = \\pi/6$ and $\\varphi = \\pi/3$."
+n = np.arange(-10, 21)
+fig, axes = plt.subplots(2, 2, figsize=(7, 4.5), sharex=True)
+stem(axes[0, 0], n, delta(n), r"$\delta[n]$")
+stem(axes[0, 1], n, step(n), r"$u[n]$")
+stem(axes[1, 0], n, exponential(0.8)(n), r"$0.8^n u[n]$")
+stem(axes[1, 1], n, sinusoid(1, np.pi / 6, np.pi / 3)(n), r"$\cos(\pi n/6 + \pi/3)$")
+plt.tight_layout()
+plt.show()
+```
+
+The exponential $a^n u[n]$ with real $a$ decays to zero if $|a| < 1$ and grows
+without bound if $|a| > 1$. If $-1 < a < 0$ it alternates in sign. It describes
+any quantity that is multiplied by the same factor at every step: the balance
+of a savings account, the charge on a capacitor read at regular intervals, or
+the echo of a sound in a room. In @sec-lti it will be the response of the
+simplest recursive filter.
+
+## Digital frequency
+
+In continuous time, $\cos(2\pi f t)$ oscillates faster as $f$ grows, without
+limit. In discrete time this is not true.
+
+::: {#prp-digital-frequency-equivalence}
+## Digital frequencies are defined modulo $2\pi$
+
+For all real $\omega_0, \varphi$, every integer $k$ and every $n \in \mathbb{Z}$,
+
+$$
+\cos\big((\omega_0 + 2\pi k) n + \varphi\big) = \cos(\omega_0 n + \varphi),
+\qquad
+\cos\big((2\pi - \omega_0) n - \varphi\big) = \cos(\omega_0 n + \varphi).
+$$
+:::
+
+::: {.proof}
+In the first equality the arguments differ by $2\pi k n$, a multiple of
+$2\pi$. For the second, the argument on the left equals
+$2\pi n - (\omega_0 n + \varphi)$, and $\cos(2\pi n - \alpha) = \cos\alpha$.
+:::
+
+Applying the two identities, any real sinusoid can be rewritten with a
+frequency in $[0, \pi]$, at the cost of changing the sign of the phase. So
+$[0, \pi]$ contains all real sinusoids, and the **highest digital frequency is
+$\pi$**: $\cos(\pi n) = (-1)^n$ changes sign at every sample, and nothing can
+oscillate faster. This is @prp-sampled-sinusoid-alias again: sampling
+$\cos(2\pi f t)$ at rate $F_s$ gives digital frequency
+
+$$
+\omega_0 = 2\pi \frac{f}{F_s} \quad \text{rad/sample},
+$$
+
+and $F_s/2$, the limit of the sampling theorem, becomes $\omega_0 = \pi$.
+
+```{python}
+#| label: fig-digital-frequencies
+#| fig-cap: "$\\cos(\\omega_0 n)$ for $\\omega_0 = k\\pi/4$, $k = 0, \\dots, 8$. The oscillation gets faster up to $\\omega_0 = \\pi$ and slower again after it: $\\omega_0$ and $2\\pi - \\omega_0$ give the same samples."
+n = np.arange(0, 24)
+fig, axes = plt.subplots(3, 3, figsize=(7, 5), sharex=True, sharey=True)
+for k, ax in enumerate(axes.flat):
+    stem(ax, n, np.cos(k * np.pi / 4 * n), rf"$\omega_0 = {k}\pi/4$", markerfmt=".")
+plt.tight_layout()
+plt.show()
+```
+
+### When is a discrete sinusoid periodic?
+
+::: {#def-periodic}
+## Periodic signal
+
+A signal $x$ is **periodic with period $N$**, for an integer $N \geq 1$, if
+$x[n + N] = x[n]$ for every $n$. The smallest such $N$ is the **fundamental
+period**.
+:::
+
+A continuous-time sinusoid $\cos(\Omega t)$, $\Omega \neq 0$, is always
+periodic, with period $2\pi/\Omega$. A discrete one needs an *integer* period,
+and that changes everything.
+
+::: {#prp-periodic-sinusoid}
+## Periodicity of a sinusoid
+
+The sinusoid $x[n] = \cos(\omega_0 n + \varphi)$ is periodic if and only if
+$\omega_0/(2\pi)$ is rational. If $\omega_0 = 2\pi p/q$ with $p, q$ coprime
+integers, $q \geq 1$, and $\omega_0$ is not a multiple of $\pi$, then the
+fundamental period is $q$.
+:::
+
+::: {.proof}
+If $\omega_0 = 2\pi p/q$, then $x[n + q] = \cos(\omega_0 n + 2\pi p + \varphi) =
+x[n]$, so $x$ is periodic.
+
+Conversely, suppose $x[n + N] = x[n]$ for all $n$. Recall that
+$\cos A = \cos B$ if and only if $A = B + 2\pi m$ or $A = -B + 2\pi m$ for some
+integer $m$. Applied to $A = \omega_0(n + N) + \varphi$ and
+$B = \omega_0 n + \varphi$, for each $n$ either (a) $\omega_0 N \in 2\pi\mathbb{Z}$,
+or (b) $2\omega_0 n + \omega_0 N + 2\varphi \in 2\pi\mathbb{Z}$. If (a) holds for some
+$n$, then $\omega_0/(2\pi) = m/N$ is rational. If not, (b) holds for every $n$,
+in particular for $n$ and $n + 1$; subtracting, $2\omega_0 \in 2\pi\mathbb{Z}$, so
+$\omega_0/(2\pi) \in \frac12\mathbb{Z}$ is rational too.
+
+For the fundamental period, assume $\omega_0 \notin \pi\mathbb{Z}$. Then case
+(b) cannot hold for two consecutive $n$, so (a) holds:
+$2\pi p N / q \in 2\pi\mathbb{Z}$, which means that $q$ divides $pN$. Since $p$
+and $q$ are coprime, $q$ divides $N$, so $N \geq q$.
+:::
+
+The proposition fails for multiples of $\pi$ only in a trivial way: for
+example $\cos(\pi n + \pi/2) = 0$ has period 1, not 2.
+
+So $\cos(2\pi \cdot 3n/8)$ has period 8, but $\cos(n)$ is **not periodic**,
+since $1/(2\pi)$ is irrational. A program can find near-periods, though:
+values of $N$ for which $x[n + N]$ is very close to $x[n]$.
+
+```{python}
+def worst_mismatch(x, N, n=np.arange(200)):
+    """max |x[n+N] - x[n]| over a window: 0 when N is a period."""
+    return np.abs(x(n + N) - x(n)).max()
+
+for name, x in [("cos(2π·3n/8)", sinusoid(1, 2 * np.pi * 3 / 8, 0)),
+                ("cos(n)", sinusoid(1, 1.0, 0))]:
+    mismatch = np.array([worst_mismatch(x, N) for N in range(1, 1001)])
+    periods = np.flatnonzero(mismatch < 1e-9) + 1        # zero up to rounding errors
+    if periods.size:
+        print(f"{name:13s}: fundamental period N = {periods[0]}")
+    else:
+        best = mismatch.argmin() + 1
+        print(f"{name:13s}: no period up to 1000; best N = {best}, mismatch {mismatch.min():.1e}")
+```
+
+For $\cos(n)$ the best candidate below 1000 is $N = 710$. That is because
+$710 / (2\pi) = 113.00001\ldots$ is almost an integer: 710 samples are almost
+exactly 113 cycles. Almost, but not exactly, and a longer search always finds
+better near-periods without ever finding a true one.
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: the period of a discrete sinusoid
+
+Set `p` and `q` and check @prp-periodic-sinusoid: the plot marks every `q`
+samples. Then replace `w0` by an irrational multiple of $2\pi$, such as `1.0`,
+and watch the marks drift.
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+from math import gcd
+
+p, q = 3, 8
+w0 = 2 * np.pi * p / q
+n = np.arange(0, 4 * q)
+plt.stem(n, np.cos(w0 * n), basefmt=" ")
+for start in range(0, len(n), q):
+    plt.axvline(start, color="C3", lw=0.8)
+plt.title(f"w0 = 2π·{p}/{q}, gcd = {gcd(p, q)}, expected period {q // gcd(p, q)}")
+plt.show()
+```
+:::
+::::
+
+## Operations on signals
+
+Signal processing is mostly about operators: rules that take a signal and
+return another one. The elementary ones follow; each is a one-line Python
+function from signals to signals.
+
+::: {#def-elementary-operators}
+## Elementary operators
+
+For signals $x, w$, a constant $\alpha \in \mathbb{C}$ and an integer $k$:
+
+| operator | definition |
+|----------|------------|
+| scaling | $(\alpha x)[n] = \alpha\, x[n]$ |
+| sum | $(x + w)[n] = x[n] + w[n]$ |
+| product | $(x w)[n] = x[n]\, w[n]$ |
+| shift by $k$ | $(\mathcal{S}^k x)[n] = x[n - k]$ |
+| reversal | $(\mathcal{R} x)[n] = x[-n]$ |
+| first difference | $(\Delta x)[n] = x[n] - x[n - 1]$ |
+| accumulation | $(\mathcal{A} x)[n] = \sum_{m=-\infty}^{n} x[m]$, when the series converges |
+:::
+
+For $k > 0$, $\mathcal{S}^k$ is a **delay**: the signal moves $k$ samples to the
+right, so each value appears $k$ steps later. For $k < 0$ it is an
+**advance**. Note that $\mathcal{S}^j \mathcal{S}^k = \mathcal{S}^{j+k}$ and
+$\mathcal{S}^0$ is the identity.
+
+```{python}
+def shift(x, k):
+    return lambda n: x(n - k)
+
+def reverse(x):
+    return lambda n: x(-n)
+
+def first_difference(x):
+    return lambda n: x(n) - x(n - 1)
+
+def accumulate(x, n0):
+    """Running sum from n0. Equals A x when x[m] = 0 for every m < n0."""
+    def y(n):
+        n = np.asarray(n)
+        m = np.arange(n0, max(int(n.max()), n0) + 1)
+        partial = np.cumsum(x(m))
+        return np.where(n >= n0, partial[np.clip(n - n0, 0, len(m) - 1)], 0.0)
+    return y
+```
+
+::: {#def-linear-operator}
+## Linear operator
+
+An operator $T$ is **linear** if
+$T(\alpha x + \beta w) = \alpha\, Tx + \beta\, Tw$ for all signals $x, w$ in its
+domain and all constants $\alpha, \beta$.
+:::
+
+Scaling, shift, reversal and first difference are linear, as a one-line
+check from the definitions shows. Accumulation is linear on the signals for
+which it is defined, and so is multiplication by a *fixed* signal $w$. The map
+$x \mapsto x^2$ is not linear. Linearity, together with the behaviour under
+shifts, is the subject of @sec-lti.
+
+### Reversal and shift do not commute
+
+The order of operations matters. Let $x$ be any signal.
+
+::: {#prp-reverse-shift}
+## Reversing a shifted signal
+
+$\mathcal{R}\mathcal{S}^k = \mathcal{S}^{-k}\mathcal{R}$. In particular
+$(\mathcal{R}\mathcal{S}^k x)[n] = x[-n - k]$, whereas
+$(\mathcal{S}^k\mathcal{R} x)[n] = x[k - n]$.
+:::
+
+::: {.proof}
+$(\mathcal{R}\mathcal{S}^k x)[n] = (\mathcal{S}^k x)[-n] = x[-n - k]$, and
+$(\mathcal{S}^{-k}\mathcal{R}x)[n] = (\mathcal{R}x)[n + k] = x[-n - k]$. Finally
+$(\mathcal{S}^k\mathcal{R}x)[n] = (\mathcal{R}x)[n - k] = x[k - n]$.
+:::
+
+A good way to evaluate an expression like $x[2 - n]$ is to ask *which sample
+of $x$ lands at index $n$*: at $n = 0$ we see $x[2]$, at $n = 2$ we see $x[0]$.
+The code does exactly this, by composing functions:
+
+```{python}
+#| label: fig-reverse-shift
+#| fig-cap: "A short ramp x, its delay by 2, and the two orders of reversing and shifting. Reversing a delayed signal (bottom left) moves it to the left; delaying a reversed signal (bottom right) moves it to the right."
+ramp = lambda n: np.where((n >= 0) & (n <= 4), n + 1.0, 0.0)
+n = np.arange(-8, 9)
+fig, axes = plt.subplots(2, 2, figsize=(7, 4.5), sharex=True, sharey=True)
+stem(axes[0, 0], n, ramp(n), r"$x[n]$")
+stem(axes[0, 1], n, shift(ramp, 2)(n), r"$x[n-2]$")
+stem(axes[1, 0], n, reverse(shift(ramp, 2))(n), r"$\mathcal{R}\mathcal{S}^2x = x[-n-2]$")
+stem(axes[1, 1], n, shift(reverse(ramp), 2)(n), r"$\mathcal{S}^2\mathcal{R}x = x[2-n]$")
+plt.tight_layout()
+plt.show()
+
+assert np.array_equal(reverse(shift(ramp, 2))(n), shift(reverse(ramp), -2)(n))
+```
+
+The `assert` checks @prp-reverse-shift on the plotted window. An `assert` that
+fails stops the book from building, so every check of this kind is part of the
+book's test suite.
+
+### Accumulation and difference
+
+Accumulation is the discrete counterpart of integration, and the first
+difference that of differentiation. They undo each other, under one
+condition.
+
+::: {#prp-accumulate-difference}
+## Accumulation and difference are inverse
+
+1. If $\mathcal{A}x$ is defined, then $\Delta(\mathcal{A}x) = x$.
+2. If $\lim_{m \to -\infty} x[m] = 0$, then $\mathcal{A}(\Delta x) = x$.
+
+In particular $u = \mathcal{A}\delta$ and $\delta = \Delta u$.
+:::
+
+::: {.proof}
+(1) $(\mathcal{A}x)[n] - (\mathcal{A}x)[n-1] = x[n]$, because the two series
+differ only in their last term. (2) The partial sums telescope:
+$\sum_{m=M}^{n}(x[m] - x[m-1]) = x[n] - x[M-1]$, which tends to $x[n]$ as
+$M \to -\infty$. The last statement follows from (1) and from the definitions
+of $\delta$ and $u$.
+:::
+
+The condition in (2) is necessary: the constant signal $x[n] = 1$ has
+$\Delta x = 0$, and $\mathcal{A}0 = 0 \neq x$. Accumulation loses the constant
+"at $-\infty$", just as integration loses the constant of integration.
+
+These operators appear every time data arrive as running totals. A web service
+usually stores the *total* number of users; the daily new users are its first
+difference. In NumPy, `np.cumsum` and `np.diff` play the roles of
+$\mathcal{A}$ and $\Delta$ on a finite array, with one caveat: `np.diff`
+returns one value fewer, unless we say what came before the first sample.
+
+```{python}
+#| label: fig-accumulate-difference
+#| fig-cap: "Daily new users (top) and their accumulation, the total number of users (bottom). The first difference of the total gives back the daily values exactly."
+n = np.arange(-5, 65)
+total = accumulate(users, n0=0)
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True)
+stem(axes[0], n, users(n), "daily new users $x[n]$", markerfmt=".")
+stem(axes[1], n, total(n), r"total users $(\mathcal{A}x)[n]$", markerfmt=".")
+plt.tight_layout()
+plt.show()
+
+assert np.array_equal(first_difference(total)(n), users(n))                       # Δ(Ax) = x
+assert np.array_equal(np.diff(np.cumsum(daily_users), prepend=0), daily_users)    # same with arrays
+assert np.array_equal(accumulate(delta, -20)(n), step(n))                         # u = A δ
+assert np.array_equal(first_difference(step)(n), delta(n))                        # δ = Δu
+```
+
+### Changing the rate: down-sampling and up-sampling
+
+In continuous time, $x(at)$ with $a > 0$ compresses or stretches the time
+axis, and $x(t/a)$ undoes it. With integer indices, "compressing" must skip
+samples and "stretching" must invent them.
+
+::: {#def-down-up-sampling}
+## Down-sampling and up-sampling
+
+For an integer $M \geq 1$, **down-sampling** by $M$ keeps one sample in $M$:
+$(\mathcal{D}_M x)[n] = x[Mn]$. For an integer $L \geq 1$, **up-sampling** by
+$L$ inserts $L - 1$ zeros between samples: $(\mathcal{U}_L x)[n] = x[n/L]$ if $L$
+divides $n$, and $0$ otherwise.
+:::
+
+```{python}
+def downsample(x, M):
+    return lambda n: x(M * n)
+
+def upsample(x, L):
+    return lambda n: np.where(n % L == 0, x(n // L), 0.0)
+```
+
+::: {#prp-down-up-inverse}
+## Up-sampling can be undone, down-sampling cannot
+
+$\mathcal{D}_L \mathcal{U}_L x = x$ for every signal $x$. In contrast, for
+$M \geq 2$, $\mathcal{D}_M$ is not injective: two different signals can have
+the same down-sampled version.
+:::
+
+::: {.proof}
+$(\mathcal{D}_L\mathcal{U}_L x)[n] = (\mathcal{U}_L x)[Ln] = x[Ln/L] = x[n]$. For
+the second claim, let $M \geq 2$. The signals $\mathcal{S}^1\delta$ and $0$ are
+different, but $(\mathcal{D}_M\mathcal{S}^1\delta)[n] = \delta[Mn - 1] = 0$ for
+every $n$, because $Mn = 1$ has no integer solution. So both have the same
+down-sampled version, the zero signal.
+:::
+
+Down-sampling discards information, and with sinusoids we can see what it does
+to the rest: $\mathcal{D}_M$ turns $\cos(\omega_0 n)$ into
+$\cos(M\omega_0 n)$, so the frequency is multiplied by $M$. If $M\omega_0 > \pi$,
+@prp-digital-frequency-equivalence brings it back into $[0, \pi]$: a slow
+oscillation appears that was not there. Down-sampling a signal is sampling it
+again, and it aliases for the same reason.
+
+```{python}
+#| label: fig-down-up
+#| fig-cap: "A sinusoid with $\\omega_0 = 0.3\\pi$ (top), down-sampled by 4 (middle), which gives frequency $1.2\\pi$, the same samples as $0.8\\pi$ (dashed), and up-sampled by 2 (bottom)."
+x = sinusoid(1, 0.3 * np.pi, 0)
+n = np.arange(0, 40)
+fig, axes = plt.subplots(3, 1, figsize=(7, 6), sharex=True)
+stem(axes[0], n, x(n), r"$x[n] = \cos(0.3\pi n)$", markerfmt=".")
+stem(axes[1], n, downsample(x, 4)(n), r"$x[4n]$", markerfmt=".")
+t = np.linspace(0, 39, 1000)
+axes[1].plot(t, np.cos(0.8 * np.pi * t), "--", color="C3", lw=1)
+stem(axes[2], n, upsample(x, 2)(n), r"$(\mathcal{U}_2 x)[n]$", markerfmt=".")
+plt.tight_layout()
+plt.show()
+
+assert np.allclose(downsample(x, 4)(n), np.cos(0.8 * np.pi * n))      # alias predicted above
+assert np.allclose(downsample(upsample(x, 2), 2)(n), x(n))             # D_L U_L = identity
+```
+
+Up-sampled signals are full of zeros, which is rarely what we want. Filling
+the gaps sensibly is **interpolation**, and doing it without creating new
+frequencies is a central topic of @sec-multirate.
+
+## Even and odd parts
+
+::: {#def-even-odd}
+## Even and odd signals
+
+A real signal is **even** if $x[-n] = x[n]$ for all $n$ and **odd** if
+$x[-n] = -x[n]$ for all $n$. Its **even part** and **odd part** are
+
+$$
+x_e[n] = \frac{x[n] + x[-n]}{2}, \qquad x_o[n] = \frac{x[n] - x[-n]}{2}.
+$$
+:::
+
+An odd signal always has $x[0] = 0$, because $x[0] = -x[0]$.
+
+::: {#prp-even-odd}
+## Even–odd decomposition
+
+1. Every real signal is, in a unique way, the sum of an even and an odd
+   signal, namely $x = x_e + x_o$.
+2. If $x$ has finite energy (@def-energy-power below), then
+   $\sum_n x[n]^2 = \sum_n x_e[n]^2 + \sum_n x_o[n]^2$.
+:::
+
+::: {.proof}
+(1) $x_e$ is even, $x_o$ is odd and $x_e + x_o = x$, all directly from the
+definitions. If also $x = e + o$ with $e$ even and $o$ odd, then
+$x_e - e = o - x_o$ is both even and odd, hence equal to its own negative,
+hence zero.
+
+(2) Expanding, $x^2 = x_e^2 + x_o^2 + 2x_ex_o$. The three series on the right
+converge absolutely: $(a \pm b)^2 \le 2(a^2 + b^2)$ gives
+$x_e[n]^2, x_o[n]^2 \le \frac12(x[n]^2 + x[-n]^2)$, and
+$|x_e x_o| \le \frac12(x_e^2 + x_o^2)$. The product $x_ex_o$ is odd, so
+the terms at $n$ and $-n$ cancel and the term at $n = 0$ is zero. Hence
+$\sum_n x_e[n]x_o[n] = 0$.
+:::
+
+Part 2 says that the even and the odd part are *orthogonal*, a word that
+@sec-signals-as-vectors makes precise. For the step, $u_e = \frac12(1 + \delta)$
+and $u_o = \frac12(u - \mathcal{R}u)$, which is $\frac12$ for $n > 0$,
+$-\frac12$ for $n < 0$ and 0 at the origin. For complex signals the useful
+notion is **conjugate symmetry**, $x[-n] = \overline{x[n]}$, which will appear in
+@sec-dft as a property of the spectrum of every real signal.
+
+```{python}
+#| label: fig-even-odd
+#| fig-cap: "The one-sided exponential $0.8^n u[n]$ and its even and odd parts. Their sum is the original signal."
+x = exponential(0.8)
+xe = lambda n: (x(n) + x(-n)) / 2
+xo = lambda n: (x(n) - x(-n)) / 2
+n = np.arange(-15, 16)
+fig, axes = plt.subplots(1, 3, figsize=(7, 2.6), sharey=True)
+stem(axes[0], n, x(n), "$x$", markerfmt=".")
+stem(axes[1], n, xe(n), "$x_e$", markerfmt=".")
+stem(axes[2], n, xo(n), "$x_o$", markerfmt=".")
+plt.tight_layout()
+plt.show()
+
+n = np.arange(-300, 301)                       # 0.8^300 ≈ 1e-29: the tails are negligible
+print("energy of x      :", np.sum(x(n) ** 2))
+print("energy of x_e+x_o:", np.sum(xe(n) ** 2) + np.sum(xo(n) ** 2))
+```
+
+## The reproducing formula
+
+The impulse is the simplest signal, and every signal can be built from shifted
+copies of it.
+
+::: {#prp-reproducing-formula}
+## Reproducing formula
+
+For every signal $x$ and every $n \in \mathbb{Z}$,
+$$
+x[n] = \sum_{k=-\infty}^{\infty} x[k]\, \delta[n - k],
+$$
+where, for each $n$, only the term $k = n$ is nonzero. Equivalently,
+$x = \sum_k x[k]\, \mathcal{S}^k\delta$, with the series converging at every $n$.
+:::
+
+::: {.proof}
+$\delta[n - k] = 1$ if $k = n$ and $0$ otherwise, so the sum reduces to
+$x[n] \cdot 1$.
+:::
+
+The formula looks trivial, and its proof is. Its value is in the point of view:
+a signal is a weighted sum of shifted impulses, with its own values as
+weights. If an operator is linear and we know what it does to *one* impulse
+and to its shifts, we know what it does to *every* signal. That observation is
+the origin of convolution in @sec-lti.
+
+```{python}
+x = x_example
+n = np.arange(-30, 31)
+rebuilt = sum(x(k) * shift(delta, k)(n) for k in range(-30, 31))
+assert np.allclose(rebuilt, x(n))
+print("max |x - rebuilt| on the window:", np.abs(rebuilt - x(n)).max())
+```
+
+## Energy and power
+
+How big is a signal? Two answers are useful, depending on whether the signal
+dies out or goes on forever.
+
+::: {#def-energy-power}
+## Energy and power
+
+The **energy** of a signal is
+$$
+E_x = \sum_{n=-\infty}^{\infty} |x[n]|^2 \in [0, \infty].
+$$
+Signals with $E_x < \infty$ are **square-summable** or of **finite energy**.
+Signals with $\sum_n |x[n]| < \infty$ are **absolutely summable**. The **power**
+of a signal is
+$$
+P_x = \lim_{N \to \infty} \frac{1}{2N + 1}\sum_{n=-N}^{N} |x[n]|^2,
+$$
+when the limit exists.
+:::
+
+The names come from physics. If $x[n]$ is the voltage across a 1 Ω resistor
+during the $n$-th second, then $|x[n]|^2$ is the energy in joules dissipated
+during that second, $E_x$ the total energy, and $P_x$ the long-term average
+energy per second. In signal processing the units are dropped and the names
+are kept.
+
+::: {#prp-summability}
+## Absolutely summable signals have finite energy
+
+Every absolutely summable signal has finite energy. The converse is false.
+:::
+
+::: {.proof}
+Let $S = \sum_n |x[n]| < \infty$. Every term satisfies $|x[n]| \le S$, so
+$|x[n]|^2 \le S|x[n]|$ and $E_x \le S^2$. For the converse, the signal
+$x[n] = u[n - 1]/n$ has $E_x = \sum_{n \ge 1} 1/n^2 = \pi^2/6$, but
+$\sum_{n\ge1} 1/n$ diverges.
+:::
+
+```{python}
+N = np.array([10, 100, 1_000, 10_000, 100_000, 1_000_000])
+k = np.arange(1, N[-1] + 1)
+partial_abs = np.cumsum(1 / k)[N - 1]
+partial_sq = np.cumsum(1 / k**2)[N - 1]
+print("        N    sum 1/n    sum 1/n^2   (π²/6 = %.6f)" % (np.pi**2 / 6))
+for row in zip(N, partial_abs, partial_sq):
+    print("%9d  %9.4f  %10.6f" % row)
+```
+
+The sum of $1/n$ grows like $\ln N$ and never settles; the sum of $1/n^2$
+converges. The distinction will matter: absolute summability of a filter's
+impulse response is exactly the condition for stability (@sec-lti), and finite
+energy is the natural setting for Fourier analysis (@sec-spectral-analysis).
+
+::: {#exm-exponential-energy}
+## Energy of the one-sided exponential
+
+For $|a| < 1$, $x[n] = a^n u[n]$ has $E_x = \sum_{n\ge0} |a|^{2n} =
+\dfrac{1}{1 - |a|^2}$, a geometric series. For $|a| \geq 1$ the terms do not
+tend to zero and $E_x = \infty$.
+:::
+
+```{python}
+for a in [0.5, 0.9, 0.99]:
+    n = np.arange(0, 20_000)
+    print(f"a = {a}: sum = {np.sum(exponential(a)(n) ** 2):.6f},   1/(1-a^2) = {1 / (1 - a**2):.6f}")
+```
+
+Energy is the right measure for signals that die out. For signals that go on
+forever, like a sinusoid or a clock, the energy is infinite and power is the
+right measure.
+
+The power of a sinusoid rests on a bound that generalises the computation in
+the proof of @prp-full-period-average.
+
+::: {#lem-bounded-cosine-sums}
+## Sums of a sinusoid stay bounded
+
+If $\theta$ is not a multiple of $2\pi$, then for every real $\alpha$, every
+integer $M$ and every $L \geq 0$,
+$$
+\left|\sum_{n=M}^{M+L-1}\cos(\theta n + \alpha)\right| \leq \frac{1}{|\sin(\theta/2)|}.
+$$
+:::
+
+::: {.proof}
+As in @prp-full-period-average, multiplying each term by $2\sin(\theta/2)$
+turns the sum into a telescoping one, equal to
+$\sin(\theta(M + L - \frac12) + \alpha) - \sin(\theta(M - \frac12) + \alpha)$,
+whose absolute value is at most 2. Divide by $2|\sin(\theta/2)| \neq 0$.
+:::
+
+::: {#prp-power}
+## Power of finite-energy, periodic and sinusoidal signals
+
+1. If $E_x < \infty$, then $P_x = 0$.
+2. If $x$ is periodic with period $N$, then $P_x$ exists and equals the
+   average over one period, $P_x = \frac1N\sum_{n=0}^{N-1}|x[n]|^2$.
+3. If $x[n] = A\cos(\omega_0 n + \varphi)$ with $\omega_0$ not a multiple of
+   $\pi$, then $P_x = A^2/2$, whether $x$ is periodic or not.
+:::
+
+::: {.proof}
+(1) The partial sums are bounded by $E_x$, so dividing by
+$2N + 1$ gives a limit of 0.
+
+(2) Any $N$ consecutive samples have the same sum of squares
+$E_N = \sum_{n=0}^{N-1}|x[n]|^2$, by periodicity. A window of $W = 2K + 1$
+samples contains $q = \lfloor W/N\rfloor$ disjoint blocks of $N$ consecutive
+samples, plus fewer than $N$ others, so its sum of squares lies between
+$qE_N$ and $(q + 1)E_N$. Dividing by $W$ and letting $K \to \infty$, both bounds
+tend to $E_N/N$, because $q/W \to 1/N$.
+
+(3) By $\cos^2\beta = \frac12(1 + \cos 2\beta)$,
+$$
+\frac{1}{2K+1}\sum_{n=-K}^{K} A^2\cos^2(\omega_0 n + \varphi)
+= \frac{A^2}{2} + \frac{A^2}{2(2K+1)}\sum_{n=-K}^{K}\cos(2\omega_0 n + 2\varphi).
+$$
+Since $2\omega_0$ is not a multiple of $2\pi$, @lem-bounded-cosine-sums bounds
+the last sum by $1/|\sin\omega_0|$, so the second term is at most
+$A^2 / (2(2K+1)|\sin\omega_0|)$ in absolute value and tends to 0.
+:::
+
+The proof gives more than the limit: it says *how fast* the average over a
+window approaches $A^2/2$. We can check the bound for $\cos(n + 0.3)$, which is
+not periodic:
+
+```{python}
+#| label: fig-power-convergence
+#| fig-cap: "Distance between the average power over 2K+1 samples and the limit 1/2, for x[n] = cos(n + 0.3). It stays below the bound from the proof of @prp-power (dashed), which decays like 1/K."
+K = np.arange(1, 5001)
+x = sinusoid(1, 1.0, 0.3)
+n = np.arange(-K[-1], K[-1] + 1)
+sq = x(n) ** 2
+centre = K[-1]
+window_sums = np.array([sq[centre - k: centre + k + 1].sum() for k in K])
+P_K = window_sums / (2 * K + 1)
+bound = 1 / (2 * (2 * K + 1) * abs(np.sin(1.0)))
+
+fig, ax = plt.subplots()
+ax.loglog(K, np.abs(P_K - 0.5), lw=0.8, label=r"$|P_K - 1/2|$")
+ax.loglog(K, bound, "--", color="C3", label="bound")
+ax.set_xlabel("$K$")
+ax.legend()
+plt.show()
+
+assert np.all(np.abs(P_K - 0.5) <= bound + 1e-12)
+```
+
+::: {#exm-clock-power}
+## Power of a clock signal
+
+A digital clock alternates between 1 and 0 with a duty cycle: it is 1 for $D$
+samples out of every $N$. By @prp-power (2), its power is $D/N$. A clock with
+period 10 and duty cycle 30 % has power 0.3. The average over a window of
+$2K + 1$ samples is exactly 0.3 only when the window holds a whole number of
+periods; otherwise it differs from 0.3 by at most $D/(2K+1)$ (adapt the
+proof of @prp-power to see why).
+:::
+
+```{python}
+clock = lambda n: np.where(n % 10 < 3, 1.0, 0.0)
+for K in [10, 100, 10_000]:
+    n = np.arange(-K, K + 1)
+    print(f"K = {K:6d}: average power {np.mean(clock(n) ** 2):.5f}")
+```
+
+## Classes of signals and how to store them {#sec-signal-classes}
+
+Real computations use finite memory, so every signal in a program is, in the
+end, a finite array. The theory, however, needs infinite sequences: shifting a
+signal or letting it run through a filter must make sense without worrying
+about where the array ends. The bridge between the two is to say precisely
+what a finite array *means* as a sequence.
+
+::: {#def-signal-classes}
+## Classes of signals
+
+- A **finite-length** signal is a vector $\mathbf{x} = (x[0], \dots, x[N-1])
+  \in \mathbb{C}^N$. It is not defined outside $0 \le n \le N-1$.
+- A **finite-support** signal is a sequence that is zero outside some interval
+  $M \le n \le M + N - 1$.
+- A **periodic** signal is a sequence with $x[n + N] = x[n]$ for all $n$.
+- An **infinite-length** signal is an arbitrary sequence.
+:::
+
+A finite-length signal becomes a sequence in two natural ways:
+
+- the **periodic extension** $\tilde{x}[n] = x[n \bmod N]$, which repeats it;
+- the **finite-support extension** $\bar{x}[n] = x[n]$ for $0 \le n \le N-1$ and
+  $\bar{x}[n] = 0$ otherwise, which pads it with zeros.
+
+The periodic extension adds no information: one period describes it
+completely. The zero padding adds an assumption, that the signal was zero
+before and after the recording. Both are useful, and @sec-dft will show that
+the discrete Fourier transform silently uses the first one.
+
+| class | in code | energy | power |
+|-------|---------|--------|-------|
+| finite-length | array of $N$ values | $\sum_{n=0}^{N-1}\lvert x[n]\rvert^2$ | not defined |
+| finite support | array plus the index of its first element | same as the array | 0 |
+| $N$-periodic | array with one period | $\infty$ (unless $x = 0$) | $\frac1N\sum_{n=0}^{N-1}\lvert x[n]\rvert^2$ |
+| infinite-length | function of $n$, as in this chapter | any | any, or undefined |
+
+: Classes of discrete-time signals, their representation in a program and their size. {#tbl-signal-classes}
+
+### Shifting a finite array
+
+Shifting an infinite sequence is unambiguous; shifting an array is not, because
+something has to enter at one end. The two extensions give the two standard
+answers:
+
+::: {#prp-circular-shift}
+## Shifts of the two extensions
+
+Let $\mathbf{x} \in \mathbb{C}^N$ and let $k$ be an integer.
+
+1. $\mathcal{S}^k\tilde{x}$ is the periodic extension of the **circular shift**
+   $\mathbf{y}$, with $y[n] = x[(n - k) \bmod N]$.
+2. $\mathcal{S}^k\bar{x}$ is the finite-support extension, on the shifted
+   interval $k \le n \le k + N - 1$, of $\mathbf{x}$ itself.
+:::
+
+::: {.proof}
+(1) $(\mathcal{S}^k\tilde{x})[n] = \tilde{x}[n - k] = x[(n - k) \bmod N]$, and
+$\tilde{y}[n] = y[n \bmod N] = x[((n \bmod N) - k) \bmod N] = x[(n - k)\bmod N]$.
+(2) $(\mathcal{S}^k\bar{x})[n] = \bar{x}[n - k]$, which is $x[n-k]$ when
+$0 \le n - k \le N-1$ and zero otherwise.
+:::
+
+The circular shift is exactly `np.roll(x, k)`: what falls off one end enters at
+the other, as in a circular buffer.
+
+```{python}
+#| label: fig-extensions
+#| fig-cap: "A finite-length signal of 6 samples (marked in colour) delayed by 2. The periodic extension (top) makes the samples that leave on the right reappear on the left: a circular shift. The zero extension (bottom) moves the block and leaves zeros behind."
+x = np.array([1.0, 2.0, 3.0, 2.5, 1.5, 0.5])
+N = len(x)
+periodic = lambda n: x[n % N]
+padded = lambda n: np.where((n >= 0) & (n < N), x[np.clip(n, 0, N - 1)], 0.0)
+
+n = np.arange(-6, 12)
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True)
+for ax, ext, name in zip(axes, [periodic, padded], [r"$\tilde{x}[n-2]$", r"$\bar{x}[n-2]$"]):
+    stem(ax, n, shift(ext, 2)(n), name, linefmt="C7-", markerfmt="C7o")
+    inside = (n >= 0) & (n < N)
+    ax.stem(n[inside], shift(ext, 2)(n)[inside], basefmt=" ")
+plt.tight_layout()
+plt.show()
+
+# Proposition (1): the shifted periodic extension, read on 0..N-1, is np.roll.
+assert np.array_equal(shift(periodic, 2)(np.arange(N)), np.roll(x, 2))
+```
+
+### Making a signal periodic
+
+Given any signal $x$ and a period $N$, we can manufacture an $N$-periodic one
+by adding copies of $x$ shifted by multiples of $N$:
+
+$$
+x_N[n] = \sum_{k=-\infty}^{\infty} x[n - kN],
+$$
+
+whenever the series converges for each $n$. It always does if $x$ has finite
+support. If the support has length $L \le N$, the copies do not overlap and
+each period shows an intact copy of $x$. If $L > N$, the copies overlap, and
+the samples near the ends of each copy are added to those of its neighbours.
+This **time-domain aliasing** is the exact mirror of the frequency aliasing
+of @sec-what-is-dsp, and @sec-dft will show that they are two sides of the
+same fact.
+
+```{python}
+#| label: fig-periodization
+#| fig-cap: "A triangular pulse of length 9 (top) made periodic with N = 12 (middle), where the copies are separate, and N = 6 (bottom), where neighbouring copies overlap and add up."
+pulse = lambda n: np.where(np.abs(n - 4) <= 4, 5.0 - np.abs(n - 4), 0.0)
+
+def periodize(x, N, copies=50):
+    return lambda n: sum(x(n - k * N) for k in range(-copies, copies + 1))
+
+n = np.arange(-12, 25)
+fig, axes = plt.subplots(3, 1, figsize=(7, 6), sharex=True)
+stem(axes[0], n, pulse(n), "pulse, length 9", markerfmt=".")
+stem(axes[1], n, periodize(pulse, 12)(n), "periodized, N = 12", markerfmt=".")
+stem(axes[2], n, periodize(pulse, 6)(n), "periodized, N = 6", markerfmt=".")
+plt.tight_layout()
+plt.show()
+```
+
+:::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: overlap or not?
+
+Change the period `N` and the pulse length `L`. For which values does each
+period still contain an undamaged copy of the pulse? Check that the sum of one
+period always equals the sum of the pulse, overlap or not, and prove it.
+
+```{.pyodide}
+import numpy as np
+import matplotlib.pyplot as plt
+
+L, N = 9, 7
+pulse = np.concatenate([np.arange(1, (L + 1) // 2 + 1), np.arange(L // 2, 0, -1)])[:L]
+
+one_period = np.zeros(N)
+for m, value in enumerate(pulse):        # add each sample to its place modulo N
+    one_period[m % N] += value
+
+n = np.arange(3 * N)
+plt.stem(n, np.tile(one_period, 3), basefmt=" ")
+plt.title(f"L = {L}, N = {N}: period sum {one_period.sum():.0f}, pulse sum {pulse.sum():.0f}")
+plt.show()
+```
+:::
+::::
+
+## A look at continuous time
+
+Continuous-time signals, functions $x\colon \mathbb{R} \to \mathbb{C}$, return in
+Part IV. The definitions carry over with integrals in place of sums:
+
+$$
+E_x = \int_{-\infty}^{\infty} |x(t)|^2\,dt, \qquad
+P_x = \lim_{T\to\infty}\frac{1}{2T}\int_{-T}^{T}|x(t)|^2\,dt .
+$$
+
+Shifts $x(t - \tau)$ and reversal $x(-t)$ work as before, with any real
+$\tau$. Some things, however, are genuinely different:
+
+| | continuous time | discrete time |
+|---|---|---|
+| time scaling | $x(at)$, invertible for every $a \ne 0$ | $\mathcal{D}_M$ loses samples; $\mathcal{U}_L$ inserts zeros |
+| sinusoid $\cos(\Omega t)$ / $\cos(\omega n)$ | always periodic ($\Omega \ne 0$) | periodic iff $\omega/2\pi$ is rational |
+| distinct frequencies | every $\Omega \geq 0$ | only $\omega \in [0, \pi]$ |
+| impulse | $\delta(t)$ is not a function (see @sec-sampling) | $\delta[n]$ is an ordinary signal |
+
+: Continuous-time and discrete-time signals compared. {#tbl-continuous-discrete}
+
+The last row deserves a comment. In continuous time there is no function that
+is zero everywhere except at one point and still has a nonzero integral, so
+the "Dirac delta" needs a more general notion of function. In discrete time
+nothing of the sort is needed, and $\delta[n]$ is the simplest signal there is.
+This is one of several ways in which the discrete theory is *simpler* than the
+continuous one it approximates.
+
+When a discrete signal comes from sampling, $x[n] = x(nT_s)$, the two
+descriptions are linked by $\omega = \Omega T_s = 2\pi f/F_s$. A sinusoid of
+$f$ Hz becomes a sinusoid of $2\pi f/F_s$ radians per sample, and
+@prp-digital-frequency-equivalence is @prp-sampled-sinusoid-alias written in
+these units.
+
+## Summary
+
+- A discrete-time signal is a function $x\colon\mathbb{Z}\to\mathbb{C}$. Its index
+  has no units. In code, a Python function of the index represents it
+  exactly; an array represents it only together with a rule for what lies
+  outside.
+- The impulse, the step, the exponential and the sinusoid are the basic
+  signals. Digital frequency is defined modulo $2\pi$, and every real sinusoid
+  has a frequency in $[0, \pi]$ (@prp-digital-frequency-equivalence).
+- $\cos(\omega_0 n + \varphi)$ is periodic if and only if $\omega_0/2\pi$ is
+  rational (@prp-periodic-sinusoid).
+- The elementary operators are linear. Order matters:
+  $\mathcal{R}\mathcal{S}^k = \mathcal{S}^{-k}\mathcal{R}$. Accumulation and
+  difference are inverse when signals vanish at $-\infty$; up-sampling can be
+  undone and down-sampling cannot.
+- Every real signal splits uniquely into even and odd parts, whose energies
+  add up (@prp-even-odd). Every signal is a weighted sum of shifted impulses
+  (@prp-reproducing-formula).
+- Energy measures signals that die out, power those that do not. Absolute
+  summability implies finite energy, not conversely. Periodic signals have the
+  power of one period, sinusoids $A^2/2$ (@prp-power).
+- A finite array becomes a sequence by periodic or by zero extension. Shifting
+  the first is a circular shift, `np.roll` (@prp-circular-shift).
+
+## Exercises
+
+1. **Periodicity.** Decide whether each signal is periodic and, if so, give its
+   fundamental period: (a) $\cos(2\pi n/7)$; (b) $\cos(3\pi n/10)$;
+   (c) $\cos(n/4)$; (d) $\cos(2\pi n/6) + \cos(2\pi n/4)$;
+   (e) $\cos(\pi n^2/8)$. Prove each answer, then confirm it with
+   `worst_mismatch`.
+2. **Order of operations.** Express $y[n] = x[3 - 2n]$ as a composition of a
+   shift, a reversal and a down-sampling, in that order. Is there a different
+   order that also works? Verify your answers with the Python operators of this
+   chapter.
+3. **Down-sampling is not shift-invariant.** Show that
+   $\mathcal{D}_M\mathcal{S}^{Mk} = \mathcal{S}^k\mathcal{D}_M$ for every integer
+   $k$, but that $\mathcal{D}_2\mathcal{S}^1 \neq \mathcal{S}^j\mathcal{D}_2$ for
+   every $j$. Give a signal that shows it.
+4. **Accumulating an exponential.** Compute $\mathcal{A}$ of $x[n] = a^n u[n]$
+   for $a \neq 1$ in closed form. Check that $\Delta$ of your result gives $x$
+   back. What goes wrong if you try to accumulate $a^n$ for all $n$, without the
+   step?
+5. **Even and odd parts.** Find the even and odd parts of $\cos(\omega_0 n +
+   \varphi)$. When is it even? When is it odd? Verify
+   @prp-even-odd (2) numerically for $x[n] = 0.9^n u[n]$ and explain why the
+   energies of the two parts are equal for $n \ne 0$ but not at $n = 0$.
+6. **Energy versus absolute summability.** For which real $p > 0$ does
+   $x[n] = u[n-1]\,n^{-p}$ have finite energy? For which is it absolutely
+   summable? Illustrate the gap with partial sums, as in the table of this
+   chapter.
+7. **Power of a sum.** Let $x[n] = \cos(\omega_1 n) + \cos(\omega_2 n)$ with
+   $0 < \omega_1 < \omega_2 < \pi$. Prove that $P_x = 1$ using
+   @lem-bounded-cosine-sums and the identity
+   $2\cos a\cos b = \cos(a - b) + \cos(a + b)$. What is $P_x$ when
+   $\omega_1 = \omega_2$? Check both cases numerically.
+8. **Periodization preserves sums.** Prove that if $x$ has finite support,
+   the sum of $x_N$ over one period equals $\sum_n x[n]$ for every $N \ge 1$.
+   Use this to explain the two titles printed by the *Try it* box on
+   periodization.
+9. **A plucked string.** Take 50 random samples uniform in $[-1, 1]$ and
+   periodize them with $N = 50$. Then build $y[n] = \frac12(\tilde{x}[n] +
+   \tilde{x}[n-1])$ and repeat the averaging with the previous output many times,
+   keeping the result periodic. Plot one period after 0, 10 and 100
+   repetitions. What happens to the signal and to its power? This idea, with a
+   decay at each step, is the Karplus–Strong algorithm for synthesising plucked
+   strings, discussed in @prandoni2008.

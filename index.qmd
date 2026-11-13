@@ -9,10 +9,21 @@ manipulating signals that have been turned into numbers.
 ## Who this book is for
 
 This book is written for computer science and engineering students in the last
-years of their degree. You are expected to program comfortably and to remember
-basic algebra and a little calculus. You are **not** expected to know complex
-analysis, Fourier series or transforms: every mathematical tool is introduced
-from scratch, when it is needed and only as far as it is needed.
+years of their degree. You are expected to program comfortably and to know the
+calculus, linear algebra and probability of a first undergraduate course. You
+are **not** expected to know complex analysis, Fourier series or transforms:
+every mathematical tool is introduced from scratch, when it is needed and only
+as far as it is needed.
+
+## How the mathematics is presented
+
+Starting from scratch does not mean being vague. Every object is defined
+precisely, and every result is stated with its hypotheses, as a *Definition*,
+*Proposition* or *Theorem*. When the proof only needs tools already introduced,
+it is given, usually in a few lines. When it does not, the result is still
+stated exactly, with a reference to the chapter or the book where it is proved.
+Every result is then checked with a numerical experiment, because a proof tells
+you *why* something is true and an experiment shows you *what it looks like*.
 
 ## How this book works
 
