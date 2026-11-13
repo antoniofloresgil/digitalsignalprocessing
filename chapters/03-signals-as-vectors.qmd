@@ -561,7 +561,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 rng = np.random.default_rng(0)
-L, d_true, a, noise_std = 127, 300, 0.2, 1.5
+L, d_true, a, noise_std = 127, 300, 0.2, 0.3
 
 s = rng.choice([-1.0, 1.0], size=L)
 r = rng.normal(0, noise_std, size=1000 + L)
