@@ -40,7 +40,10 @@ environment. Without `make`, see the commands in
 | `references.bib` | Bibliography |
 | `docker/` | Container image and pinned Python packages |
 | `_extensions/r-wasm/live/` | Quarto Live extension (in-browser Python via Pyodide) |
-| `styles/` | HTML (SCSS) and PDF (LaTeX) styling |
+| `styles/` | HTML (SCSS) and PDF (LaTeX) styling, front matter |
+| `design/palette.json` | Shared colors and the selected cover artwork |
+| `tools/cover.py` | Draws the covers (runs before every render) |
+| `tools/filters/` | Lua filters for the PDF structure |
 | `.devcontainer/` | VS Code dev container |
 | `docs/` | Design decisions for contributors |
 

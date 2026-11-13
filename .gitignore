@@ -2,11 +2,15 @@
 /_book/
 /.quarto/
 /_freeze/
+/site_libs/
 **/*.quarto_ipynb
 /*.html
 /chapters/*.html
 /appendices/*.html
 *_files/
+
+# Generated cover for the HTML edition (tools/cover.py)
+/design/cover.png
 
 # Python
 __pycache__/

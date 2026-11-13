@@ -1,0 +1,15 @@
+{
+  "comment": "Shared identity for HTML, PDF and covers; same family as From Concept to Silicon.",
+  "cover": "fourier",
+  "colors": {
+    "cover": "#000000",
+    "night": "#101F30",
+    "cyan": "#4DD8FF",
+    "copper": "#F5B544",
+    "paper": "#F5F2EB",
+    "muted": "#B5C3CE",
+    "line": "#34495C",
+    "ink": "#182B3A",
+    "link": "#126178"
+  }
+}

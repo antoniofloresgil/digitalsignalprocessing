@@ -28,3 +28,23 @@
   Pandoc attribute, so in the PDF build the fence is not recognised and the
   enclosing divs end up unclosed. The class form is accepted by the
   quarto-live filter (v0.1.3) and parses everywhere.
+
+## 2026-11-13: editorial design
+
+- **Same visual family as *From Concept to Silicon*.** A4, KOMA `scrreprt`,
+  DejaVu Serif body with DejaVu Sans headings, night/amber/cyan palette
+  (`design/palette.json`), cover → half title → title → credits → preface →
+  contents → Part I. Ported from that book's generated style files, without
+  its generator scripts: here the styles are edited directly.
+- **The cover is code.** `tools/cover.py` draws front and back covers with
+  Matplotlib as a pre-render step (`.quarto/cover/*.pdf` for the PDF,
+  `design/cover.png` for HTML; both untracked). No SVG toolchain is needed.
+  Five artwork variants exist; `design/palette.json` selects one. The chosen
+  one, `fourier`, rebuilds a discrete square wave from growing sets of FFT
+  harmonics above the coefficients |X[k]|: the book's central idea.
+  Preview all variants with `python tools/cover.py --preview DIR`.
+- **PDF structure filters.** `tools/filters/pdf-structure.lua` moves the
+  contents after the preface and starts arabic numbering at Part I;
+  `tools/filters/part-titles.lua` drops the "I." prefix that LaTeX already
+  numbers.
+- **No dark HTML theme**, matching the other book's single paper-toned theme.

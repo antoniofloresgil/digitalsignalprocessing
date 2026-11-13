@@ -1,0 +1,55 @@
+% Cover, preliminaries, contents and back cover for the PDF edition.
+% The cover PDFs are drawn by tools/cover.py (a Quarto pre-render step).
+\AtBeginDocument{%
+  \hypersetup{pageanchor=false,colorlinks=true,linkcolor=BookLink,urlcolor=BookLink,citecolor=BookLink,bookmarksdepth=1,bookmarksopen=false}%
+  \includepdf[pages=1,pagecommand={\thispagestyle{empty}\thispdfpagelabel{Cover}},fitpaper=false]{.quarto/cover/front.pdf}%
+  \hypersetup{pageanchor=true}%
+  \raggedbottom
+}
+\makeatletter
+\newcommand{\BookPreliminaries}{%
+  \pagenumbering{roman}\pagestyle{plain.scrheadings}%
+  % Half title.
+  \thispagestyle{empty}\null\vfill
+  {\sffamily\bfseries\color{BookNight}\fontsize{28}{34}\selectfont\raggedright\@title\par}
+  \vfill\null\clearpage
+  % Title page.
+  \thispagestyle{empty}\pdfbookmark[0]{Title}{book-title}%
+  \vspace*{.12\textheight}
+  {\sffamily\bfseries\color{BookNight}\fontsize{32}{38}\selectfont\raggedright\@title\par}
+  \vspace{1em}{\color{BookAmber}\rule{.22\textwidth}{3pt}}\par\vspace{1.5em}
+  {\sffamily\Large\raggedright\@subtitle\par}
+  \vspace{2em}{\Large\@author\par}
+  \vfill{\sffamily\small DIGITAL EDITION\par\medskip\@date\par}\clearpage
+  % Credits.
+  \thispagestyle{empty}\pdfbookmark[0]{Credits and license}{book-credits}%
+  \null\vfill\begingroup\small\setlength{\parskip}{.8em}
+  {\sffamily\bfseries\large Publication and licensing\par}
+  Copyright \textcopyright\ \the\year\ \@author.
+
+  The text and original figures are licensed under Creative Commons
+  Attribution--ShareAlike 4.0 International (CC BY-SA 4.0). The code, including
+  the code cells printed in this book, is licensed under the MIT license.
+
+  Digital edition: \@date. Every figure, including the cover, is produced by
+  the Python code in the book sources each time the book is built.
+
+  \url{https://antoniofloresgil.github.io/digitalsignalprocessing/}\par
+  \url{https://github.com/antoniofloresgil/digitalsignalprocessing}\par
+  \endgroup\clearpage
+}
+\makeatother
+\newcommand{\BookContents}{%
+  \clearpage\pagestyle{plain.scrheadings}%
+  \renewcommand*{\contentsname}{Contents}%
+  \setcounter{tocdepth}{1}%
+  \pdfbookmark[0]{Contents}{book-contents}\tableofcontents\clearpage
+}
+\newcommand{\BookMainMatter}{%
+  \clearpage\pagenumbering{arabic}\pagestyle{scrheadings}\markboth{}{}%
+}
+\AtEndDocument{%
+  \clearpage
+  \hypersetup{pageanchor=false}%
+  \includepdf[pages=1,pagecommand={\thispagestyle{empty}\thispdfpagelabel{Back cover}},fitpaper=false]{.quarto/cover/back.pdf}%
+}

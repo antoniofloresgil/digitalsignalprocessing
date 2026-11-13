@@ -1,12 +1,17 @@
 project:
   type: book
   output-dir: _book
+  pre-render:
+    - python tools/cover.py
 
 book:
   title: "Digital Signal Processing"
   subtitle: "A Hands-On Introduction with Python"
   author: "Antonio Flores Gil"
   date: today
+  cover-image: design/cover.png
+  cover-image-alt: "Digital Signal Processing, by Antonio Flores Gil. A discrete square wave rebuilt from more and more harmonics of its FFT, above the coefficients that build it."
+  site-url: https://antoniofloresgil.github.io/digitalsignalprocessing/
   output-file: Digital-Signal-Processing
   downloads: [pdf]
   repo-url: https://github.com/antoniofloresgil/digitalsignalprocessing
@@ -57,9 +62,7 @@ number-depth: 2
 
 format:
   live-html:
-    theme:
-      light: [cosmo, styles/book.scss]
-      dark: [darkly, styles/book.scss]
+    theme: [cosmo, styles/book.scss]
     code-copy: true
     code-tools: false
     fig-format: svg
@@ -72,5 +75,13 @@ format:
     latex-auto-install: false
     toc-depth: 2
     fig-format: pdf
-    code-block-bg: true
-    include-in-header: styles/book.tex
+    code-block-bg: "#EDF1F4"
+    template-partials:
+      - styles/before-body.tex
+      - styles/toc.tex
+    include-in-header:
+      - styles/book.tex
+      - styles/frontmatter.tex
+    filters:
+      - tools/filters/part-titles.lua
+      - tools/filters/pdf-structure.lua
