@@ -424,10 +424,12 @@ plt.show()
 ::: {.callout-tip}
 ## Try it: the wheel on film
 
-Choose the true rotations between frames, `steps_deg`, and the number of
-`spokes`, and press **Run Code** to film the wheels. Which values make a wheel
-seem to turn backwards? Which make it stand still? Predict each apparent motion
-with the rule of this section before running the code.
+Here the wheels have 8 spokes, so a rotation of $360°/8 = 45°$ between frames
+brings every spoke to the position of the next one. Before pressing **Run
+Code**, predict the apparent motion of wheels that turn by 40°, 45° and 50° per
+frame with the rule of this section. Then change the true rotations,
+`steps_deg`, and the number of `spokes`: which values make a wheel seem to turn
+backwards? Which make it stand still?
 
 ```{.pyodide}
 import io, base64
@@ -435,7 +437,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
-steps_deg, spokes = [68, 72, 76], 5
+steps_deg, spokes = [40, 45, 50], 8
 n_frames, ms_per_frame = 30, 110
 
 class Film:
