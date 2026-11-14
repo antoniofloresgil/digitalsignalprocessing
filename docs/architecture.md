@@ -99,3 +99,30 @@
   `<img src="data:image/gif;base64,...">`. Build-time animations go inside
   `content-visible when-format="html"`, with a static frame-strip figure for the
   PDF. First use: the wagon-wheel animation in chapter 4.
+
+## 2026-11-14: every code cell is runnable in the HTML edition
+
+- **Why not "autorun everything".** Running a whole chapter in the browser on
+  load does not work: quarto-live evaluates independent cells in no particular
+  order, so cells that use earlier variables fail. Measured in Pyodide, the
+  computation itself is cheap (every cell runs in under 7 s, whole chapters in a
+  few seconds), so the problem is dependencies, not speed.
+- **Mechanism.** `tools/filters/live-cells.lua` (HTML only, run at `pre-ast`,
+  before quarto-live) replaces the code block of each executed cell by a
+  quarto-live *exercise* editor. The cell keeps its build-time output below the
+  editor, labelled "Output when the book was built", and its figure label and
+  caption. `tools/live_deps.py` parses the source `.qmd` and, for each cell,
+  finds the earlier cells it needs (static, by names: the nearest earlier cell
+  binding each name it uses, transitively). That code is attached as the
+  exercise's hidden `setup` block, which quarto-live runs in a fresh environment
+  before the visible code on every Run. So each cell runs correctly alone, in any
+  order, and always gives the same answer (the `rng` of the first cell restarts
+  from its seed, which is why live numbers can differ slightly from the printed
+  ones).
+- **The source `.qmd` is the input.** Cells with `echo: false` or shown only in
+  the PDF have no code in the HTML document but can still be dependencies, so the
+  analysis reads the `.qmd` and matches cells by `execution_count`.
+- **Validation.** Running every cell with its dependencies in a clean Pyodide
+  namespace found one assertion that depended on the random stream
+  (chapter 10), now fixed; every cell of the book passes. The PDF is unaffected
+  (the filter is registered for `live-html` only).

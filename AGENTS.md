@@ -30,6 +30,15 @@
   `::: {.content-visible when-format="html"}` plus a `callout-tip`. They must
   be self-contained (no imports from other cells) and use only packages
   available in Pyodide.
+- Every code cell shows its output and is also runnable in the HTML edition
+  (`tools/filters/live-cells.lua`, see `docs/architecture.md`). Therefore:
+  cells must run in Pyodide (NumPy, SciPy, Matplotlib, Pillow only); a cell
+  must get every name it uses from earlier cells or from itself, at module
+  level (the dependency analysis is static and works on names); do not rely on
+  the state of `rng` left by earlier cells, since each run starts from a fresh
+  seed, so an `assert` on a random result must hold for any seed; never mutate
+  global state that later cells rely on anywhere but in a cell that also binds
+  the name (for example set `plt.rcParams` in the setup cell).
 - Notation: `x[n]` discrete time, `x(t)` continuous time, `ω` digital
   frequency in rad/sample, `F_s` sampling frequency in Hz.
 

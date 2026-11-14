@@ -57,6 +57,23 @@ div.callout.callout-warning, div.callout.callout-caution { border-left-color: #8
 div.callout.callout-important { border-left-color: #963f3f; }
 // "Try it" boxes hold the in-browser (Pyodide) exercises.
 .callout-tip .exercise-cell { margin-top: .5rem; }
+
+// Every code cell of the HTML edition is runnable (tools/filters/live-cells.lua):
+// an editor, the output of the reader's own run, then the output stored at build time.
+.cell .exercise-cell { margin-bottom: .75rem; }
+.cell .exercise-editor { margin-bottom: .5rem; }
+.cell .cell-output-container-pyodide:not(:empty)::before,
+.live-static-label {
+  display: block;
+  font-family: $font-family-sans-serif;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: #5b6b78;
+}
+.cell .cell-output-container-pyodide:not(:empty)::before { content: "Output of your run"; margin-bottom: .3rem; }
+.live-static-label { margin: 1rem 0 .4rem; padding-top: .45rem; border-top: 1px solid #ccd6dd; }
 .footnotes { font-size: .9rem; line-height: 1.5; border-top: 1px solid #8b9ca8; padding-top: 1rem; }
 :focus-visible { outline: 3px solid #126178; outline-offset: 3px; }
 @media print {

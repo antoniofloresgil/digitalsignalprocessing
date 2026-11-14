@@ -131,7 +131,8 @@ axes[1].set_xlabel("lag $k$")
 plt.tight_layout()
 plt.show()
 
-assert np.allclose(r_time, r_exact, rtol=0.05)
+# the statistical error of a time average over N samples is about r[0]/sqrt(N) times a small factor
+assert np.allclose(r_time, r_exact, rtol=0, atol=0.01 * r_exact[0])
 ```
 
 ## Power spectral density

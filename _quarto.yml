@@ -66,6 +66,9 @@ format:
     theme: [cosmo, styles/book.scss]
     code-copy: true
     code-tools: false
+    filters:
+      - path: tools/filters/live-cells.lua
+        at: pre-ast
     fig-format: svg
     pyodide:
       packages: [numpy, scipy, matplotlib]
