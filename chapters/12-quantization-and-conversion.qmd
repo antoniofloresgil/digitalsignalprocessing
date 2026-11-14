@@ -98,8 +98,10 @@ is high.
 Under the additive-noise model, a sinusoid of amplitude $A$ quantized with $B$
 bits on $[-A, A]$ has
 $$
-\mathrm{SNR} = \frac32\,4^B, \qquad \mathrm{SNR}_{\mathrm{dB}} = 6.02\,B + 1.76 .
+\mathrm{SNR} = \frac32\,4^B, \qquad \mathrm{SNR}_{\mathrm{dB}} = (6.02\,B + 1.76)\ \text{dB}.
 $$
+
+The slope is 6.02 dB per bit and the constant is 1.76 dB.
 :::
 
 ::: {.proof}

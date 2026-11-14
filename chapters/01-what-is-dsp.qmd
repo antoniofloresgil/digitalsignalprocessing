@@ -412,8 +412,13 @@ quantizer on $[-1, 1]$. Then the error $E = Q(X) - X$ is uniformly distributed o
 $[-\Delta/2, \Delta/2]$, and
 
 $$
-\mathrm{SNR} = 4^B, \qquad \mathrm{SNR}_{\mathrm{dB}} = 20\log_{10}(2)\, B \approx 6.02\, B .
+\mathrm{SNR} = 4^B = 2^{2B}, \qquad
+\mathrm{SNR}_{\mathrm{dB}} = 10\log_{10}\big(4^B\big) = \big(20\log_{10}2\big)\,B \approx 6.02\,B\ \text{dB}.
 $$
+
+That is, **6.02 dB per bit**: $B$ is a number of bits and the coefficient
+$20\log_{10}2 \approx 6.02$ is in dB per bit. Conversely, a target SNR needs
+$B = \tfrac12\log_2\mathrm{SNR} = \mathrm{SNR}_{\mathrm{dB}}/6.02$ bits.
 :::
 
 ::: {.proof}
@@ -440,7 +445,7 @@ for bits in [2, 4, 8, 12, 16]:
 ```
 
 Each extra bit halves $\Delta$, divides the error power by 4 and so adds
-$10\log_{10}4 \approx 6.02$ dB. For signals that are not uniformly distributed
+$10\log_{10}4 \approx 6.02$ dB to the SNR. For signals that are not uniformly distributed
 the error is no longer exactly uniform, and @sec-quantization studies when the
 uniform model is still a good approximation; for a full-scale sinusoid it
 leads to the well-known figure $6.02B + 1.76$ dB. A CD, with 16 bits, is
@@ -655,7 +660,7 @@ is a list of numbers; Part IV returns to the edges.
   $F_s > 2 f_{\max}$, and the sinc formula rebuilds it.
 - **Quantization** to $B$ bits has an error of at most half a step inside the
   range (@prp-quantization-error-bound); for a uniformly distributed input
-  the SNR is exactly $6.02B$ dB (@prp-six-db-per-bit).
+  the SNR is exactly $6.02B$ dB, that is 6.02 dB per bit (@prp-six-db-per-bit).
 - Regeneration stops noise from accumulating: over $K$ stages, the error
   probability of a digital link is at most $K$ times that of one stage
   (@prp-repeaters), while an analog link loses SNR linearly in $K$.
