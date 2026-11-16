@@ -148,7 +148,11 @@ infinite-dimensional version of @thm-orthonormal-expansion). Multiplying by
 $e^{j2\pi ft}$ and integrating over $[-F_s/2, F_s/2]$ is continuous for mean-square
 convergence (it is an inner product, @prp-l2-inner-product), so
 $$
-x(t) = \int_{-F_s/2}^{F_s/2}X(f)e^{j2\pi ft}df = \sum_nT\,x(nT)\int_{-F_s/2}^{F_s/2}e^{j2\pi f(t - nT)}df = \sum_nx(nT)\operatorname{sinc}\!\left(\frac{t - nT}{T}\right),
+\begin{aligned}
+x(t) &= \int_{-F_s/2}^{F_s/2}X(f)e^{j2\pi ft}df\\
+&= \sum_nT\,x(nT)\int_{-F_s/2}^{F_s/2}e^{j2\pi f(t - nT)}df\\
+&= \sum_nx(nT)\operatorname{sinc}\!\left(\frac{t - nT}{T}\right),
+\end{aligned}
 $$
 using $\int_{-F_s/2}^{F_s/2}e^{j2\pi fu}df = F_s\operatorname{sinc}(F_su)$.
 :::
@@ -179,9 +183,11 @@ where only finitely many terms are nonzero.
 Let $P(\omega) = F_s\sum_kX((\frac{\omega}{2\pi} - k)F_s)$, a finite sum of integrable
 functions, $2\pi$-periodic in $\omega$. Its Fourier coefficients are
 $$
+\begin{aligned}
 \frac1{2\pi}\int_{-\pi}^{\pi}P(\omega)e^{j\omega n}d\omega
-= \sum_k\int_{(-\frac12 - k)F_s}^{(\frac12 - k)F_s}X(f)\,e^{j2\pi(f + kF_s)nT}df
-= \int_{-\infty}^{\infty}X(f)e^{j2\pi fnT}df = x(nT),
+&= \sum_k\int_{(-\frac12 - k)F_s}^{(\frac12 - k)F_s}X(f)\,e^{j2\pi(f + kF_s)nT}df\\
+&= \int_{-\infty}^{\infty}X(f)e^{j2\pi fnT}df = x(nT),
+\end{aligned}
 $$
 substituting $f = (\frac{\omega}{2\pi} - k)F_s$ in each term and using
 $e^{j2\pi kF_snT} = 1$. So the $x[n]$ are the Fourier coefficients of $P$. Since

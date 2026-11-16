@@ -48,9 +48,10 @@ above $\omega_s > \omega_p$. A specification makes this quantitative.
 
 A filter meets the specification $(\omega_p, \omega_s, \delta_p, \delta_s)$ if
 $$
-1 - \delta_p \le |H(e^{j\omega})| \le 1 + \delta_p \ \text{ for } 0 \le \omega \le \omega_p,
-\qquad
-|H(e^{j\omega})| \le \delta_s \ \text{ for } \omega_s \le \omega \le \pi .
+\begin{aligned}
+1 - \delta_p \le |H(e^{j\omega})| \le 1 + \delta_p &\quad \text{for } 0 \le \omega \le \omega_p,\\
+|H(e^{j\omega})| \le \delta_s &\quad \text{for } \omega_s \le \omega \le \pi .
+\end{aligned}
 $$
 $[0, \omega_p]$ is the **passband**, $[\omega_s, \pi]$ the **stopband** and
 $(\omega_p, \omega_s)$ the **transition band**, where nothing is required.

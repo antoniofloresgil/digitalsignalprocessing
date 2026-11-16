@@ -42,8 +42,10 @@ A **complex number** is an ordered pair of real numbers, written
 $z = a + jb$, with **real part** $\operatorname{Re} z = a$ and **imaginary part**
 $\operatorname{Im} z = b$. Sum and product are defined by
 $$
-(a + jb) + (c + jd) = (a + c) + j(b + d), \qquad
-(a + jb)(c + jd) = (ac - bd) + j(ad + bc).
+\begin{aligned}
+(a + jb) + (c + jd) &= (a + c) + j(b + d),\\
+(a + jb)(c + jd) &= (ac - bd) + j(ad + bc).
+\end{aligned}
 $$
 The set of complex numbers is $\mathbb{C}$. The real number $a$ is identified
 with $a + j0$, and $j = 0 + j1$.

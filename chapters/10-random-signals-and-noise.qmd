@@ -231,9 +231,11 @@ negative frequencies folded onto the positive ones.
 Let $x$ be a real WSS process with absolutely summable autocorrelation, and $h$
 a real absolutely summable impulse response. Then $y = h * x$ is WSS, with
 $$
-m_y = m_x\sum_kh[k], \qquad
-r_y[k] = \sum_i\sum_lh[i]\,h[l]\,r_x[k - i + l], \qquad
-S_y(e^{j\omega}) = |H(e^{j\omega})|^2\,S_x(e^{j\omega}).
+\begin{aligned}
+m_y &= m_x\sum_kh[k],\\
+r_y[k] &= \sum_i\sum_lh[i]\,h[l]\,r_x[k - i + l],\\
+S_y(e^{j\omega}) &= |H(e^{j\omega})|^2\,S_x(e^{j\omega}).
+\end{aligned}
 $$
 In particular, filtered white noise of variance $\sigma^2$ has
 $S_y = \sigma^2|H|^2$ and power $\sigma^2\sum_kh[k]^2$.
@@ -245,7 +247,11 @@ convergence: $\mathbb{E}|x[n]x[m]| \le r_x[0]$ by Cauchy–Schwarz, and
 $\sum_i\sum_l|h[i]||h[l]|r_x[0] < \infty$. Then
 $\mathbb{E}[y[n]] = \sum_ih[i]m_x$, and
 $$
-\mathbb{E}[y[n + k]\,y[n]] = \sum_i\sum_lh[i]h[l]\,\mathbb{E}[x[n + k - i]\,x[n - l]] = \sum_i\sum_lh[i]h[l]\,r_x[k - i + l],
+\begin{aligned}
+\mathbb{E}[y[n + k]\,y[n]]
+&= \sum_i\sum_lh[i]h[l]\,\mathbb{E}[x[n + k - i]\,x[n - l]]\\
+&= \sum_i\sum_lh[i]h[l]\,r_x[k - i + l],
+\end{aligned}
 $$
 which does not depend on $n$. This is $r_y = h * \bar h * r_x$ with
 $\bar h[l] = h[-l]$, whose DTFT is $\overline{H(e^{j\omega})}$ for real $h$. By

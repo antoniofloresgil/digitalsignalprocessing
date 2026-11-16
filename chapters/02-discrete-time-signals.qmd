@@ -173,9 +173,10 @@ limit. In discrete time this is not true.
 For all real $\omega_0, \varphi$, every integer $k$ and every $n \in \mathbb{Z}$,
 
 $$
-\cos\big((\omega_0 + 2\pi k) n + \varphi\big) = \cos(\omega_0 n + \varphi),
-\qquad
-\cos\big((2\pi - \omega_0) n - \varphi\big) = \cos(\omega_0 n + \varphi).
+\begin{aligned}
+\cos\big((\omega_0 + 2\pi k) n + \varphi\big) &= \cos(\omega_0 n + \varphi),\\
+\cos\big((2\pi - \omega_0) n - \varphi\big) &= \cos(\omega_0 n + \varphi).
+\end{aligned}
 $$
 :::
 
@@ -739,11 +740,16 @@ $qE_N$ and $(q + 1)E_N$. Dividing by $W$ and letting $K \to \infty$, both bounds
 tend to $E_N/N$, because $q/W \to 1/N$.
 
 (3) By $\cos^2\beta = \frac12(1 + \cos 2\beta)$,
-$$
-\frac{1}{2K+1}\sum_{n=-K}^{K} A^2\cos^2(\omega_0 n + \varphi)
-= \frac{A^2}{2} + \frac{A^2}{2(2K+1)}\sum_{n=-K}^{K}\cos(2\omega_0 n + 2\varphi).
-$$
-Since $2\omega_0$ is not a multiple of $2\pi$, @lem-bounded-cosine-sums bounds
+
+    $$
+    \begin{aligned}
+    \frac{1}{2K+1}\sum_{n=-K}^{K} A^2\cos^2(\omega_0 n + \varphi)
+    &= \frac{A^2}{2} \\
+    &\quad + \frac{A^2}{2(2K+1)}\sum_{n=-K}^{K}\cos(2\omega_0 n + 2\varphi).
+    \end{aligned}
+    $$
+
+    Since $2\omega_0$ is not a multiple of $2\pi$, @lem-bounded-cosine-sums bounds
 the last sum by $1/|\sin\omega_0|$, so the second term is at most
 $A^2 / (2(2K+1)|\sin\omega_0|)$ in absolute value and tends to 0.
 :::

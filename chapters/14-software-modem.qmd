@@ -195,9 +195,11 @@ a complex exponential at the carrier frequency $f_c = 1800$ Hz, which shifts
 the spectrum (@prp-dft-properties, modulation), and keeps the real part, which
 is all that a wire can carry:
 $$
-s[n] = \sqrt2\,\operatorname{Re}\!\big(s_b[n]\,e^{j\omega_cn}\big)
-= \sqrt2\big(\operatorname{Re}s_b[n]\cos\omega_cn - \operatorname{Im}s_b[n]\sin\omega_cn\big),
+\begin{aligned}
+s[n] &= \sqrt2\,\operatorname{Re}\!\big(s_b[n]\,e^{j\omega_cn}\big)\\
+&= \sqrt2\big(\operatorname{Re}s_b[n]\cos\omega_cn - \operatorname{Im}s_b[n]\sin\omega_cn\big),
 \qquad \omega_c = 2\pi\frac{f_c}{F_s}.
+\end{aligned}
 $$
 The real and imaginary parts of the symbols ride on a cosine and a sine of the
 same frequency: **quadrature amplitude modulation**. By

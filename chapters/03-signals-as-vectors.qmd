@@ -200,8 +200,10 @@ system. Two bases matter in this book.
 
 For $N \ge 1$ and $k = 0, \dots, N-1$, let
 $$
-c_k[n] = s_k \cos\!\left(\frac{\pi k (2n + 1)}{2N}\right), \quad n = 0, \dots, N-1,
-\qquad s_0 = \sqrt{1/N},\ s_k = \sqrt{2/N}\ (k \ge 1).
+\begin{aligned}
+c_k[n] &= s_k \cos\!\left(\frac{\pi k (2n + 1)}{2N}\right), \quad n = 0, \dots, N-1,\\
+s_0 &= \sqrt{1/N}, \qquad s_k = \sqrt{2/N}\ (k \ge 1).
+\end{aligned}
 $$
 :::
 

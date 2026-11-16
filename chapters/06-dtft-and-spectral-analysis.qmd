@@ -540,9 +540,18 @@ above 1 Hz.
 For $t = 0$ both sides are 1. Otherwise the integrand's imaginary part is odd,
 so the integral is $2\int_0^1(1 - f)\cos(2\pi ft)\,df$. Integrating by parts,
 $$
-2\int_0^1(1 - f)\cos(2\pi ft)\,df = 2\left[\frac{(1 - f)\sin(2\pi ft)}{2\pi t}\right]_0^1 + \frac{2}{2\pi t}\int_0^1\sin(2\pi ft)\,df
-= \frac{1 - \cos(2\pi t)}{2\pi^2t^2} = \frac{\sin^2(\pi t)}{\pi^2t^2}.
+\begin{aligned}
+2\int_0^1(1 - f)\cos(2\pi ft)\,df
+&= 2\left[\frac{(1 - f)\sin(2\pi ft)}{2\pi t}\right]_0^1
+ + \frac{2}{2\pi t}\int_0^1\sin(2\pi ft)\,df \\
+&= \frac{1 - \cos(2\pi t)}{2\pi^2t^2}
+ = \frac{\sin^2(\pi t)}{\pi^2t^2}.
+\end{aligned}
 $$
+The boundary term vanishes (at $f = 1$ because of the factor $1 - f$, at
+$f = 0$ because $\sin 0 = 0$), the remaining integral is
+$\frac{1 - \cos(2\pi t)}{2\pi t}$, and the last step uses
+$1 - \cos 2\alpha = 2\sin^2\alpha$.
 Since $\Lambda$ and $\operatorname{sinc}^2$ are both absolutely integrable and
 continuous, the inversion formula identifies $\Lambda$ as the transform of
 $\operatorname{sinc}^2$.

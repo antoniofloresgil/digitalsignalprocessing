@@ -48,8 +48,11 @@ $$
 By @prp-sum-of-roots, $\frac1M\sum_{k=0}^{M-1}e^{j2\pi km/M}$ is 1 if $M$ divides $m$
 and 0 otherwise. Hence
 $$
-Y(e^{j\omega}) = \sum_nx[Mn]e^{-j\omega n} = \sum_mx[m]\,e^{-j\frac{\omega}{M}m}\,\frac1M\sum_{k=0}^{M-1}e^{j\frac{2\pi k}{M}m}
-= \frac1M\sum_{k=0}^{M-1}\sum_mx[m]e^{-j\frac{\omega - 2\pi k}{M}m},
+\begin{aligned}
+Y(e^{j\omega}) = \sum_nx[Mn]e^{-j\omega n}
+&= \sum_mx[m]\,e^{-j\frac{\omega}{M}m}\,\frac1M\sum_{k=0}^{M-1}e^{j\frac{2\pi k}{M}m}\\
+&= \frac1M\sum_{k=0}^{M-1}\sum_mx[m]e^{-j\frac{\omega - 2\pi k}{M}m},
+\end{aligned}
 $$
 where the first equality keeps only the $m$ that are multiples of $M$, and the
 exchange of sums is allowed because the inner sum over $k$ is finite.
