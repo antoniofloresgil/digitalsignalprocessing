@@ -50,7 +50,10 @@ puts everything together in a software modem that sends bits through a
 simulated telephone line.
 
 The chapters are meant to be read in order. Mathematical refreshers live in
-@sec-math-toolbox, so you can look things up without breaking the flow.
+@sec-math-toolbox, so you can look things up without breaking the flow. The
+proofs that need more analysis than the chapters introduce, such as completeness
+of function spaces, Fourier inversion and Plancherel, are collected in
+@sec-advanced-proofs; the chapters say where they rely on it.
 
 ## Acknowledgements
 

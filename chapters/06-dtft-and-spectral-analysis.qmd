@@ -86,7 +86,8 @@ $\sum_n|x[n]|^2 = \frac1{2\pi}\int_{-\pi}^{\pi}|X(e^{j\omega})|^2d\omega$ (Parse
 For signals with finite support this follows by expanding the square and
 integrating term by term as in (3). The DTFT, inversion and Parseval also extend
 to every finite-energy signal; the series then converges in the energy sense
-rather than at every $\omega$ (Chapter 4 of @prandoni2008). For real $x$,
+rather than at every $\omega$ (@thm-dtft-l2 proves this, and Chapter 4 of
+@prandoni2008 discusses it). For real $x$,
 $X(e^{-j\omega}) = \overline{X(e^{j\omega})}$, so $|X|$ is even and we usually plot
 only $[0, \pi]$.
 
@@ -376,7 +377,8 @@ lobe of the window is a few bins wide, so frequency resolution improves with
 $L$. But a segment spans $L/F_s$ seconds, and anything that happens within it is
 smeared over that time, so time resolution worsens with $L$. No choice of $L$
 gives both: this is the time–frequency **uncertainty principle** of signal
-analysis (Section 4.8 of @prandoni2008 states it precisely). A chirp, whose
+analysis. @thm-uncertainty states it precisely, with spreads measured by
+standard deviations, and proves it (see also Section 4.8 of @prandoni2008). A chirp, whose
 frequency rises steadily, shows the trade-off well.
 
 ```{python}
@@ -465,9 +467,9 @@ the midpoint, but near the jump they **overshoot**, and the overshoot does not
 shrink as $K$ grows: it only gets narrower. For a jump of height $h$, the
 maximum of $S_K$ exceeds the upper value by a quantity that tends to
 $h\left(\frac{1}{\pi}\operatorname{Si}(\pi) - \frac12\right) \approx 0.0895\,h$,
-where $\operatorname{Si}(x) = \int_0^x\frac{\sin u}{u}du$. We state this
-classical result without proof (see, for example, @oppenheim2010) and measure
-it:
+where $\operatorname{Si}(x) = \int_0^x\frac{\sin u}{u}du$. @thm-gibbs proves
+this for the square wave, and every jump of a piecewise smooth signal behaves
+like a scaled copy of it. Here we measure it:
 
 ```{python}
 #| label: fig-gibbs
@@ -514,10 +516,10 @@ $$
 
 When $X$ is also absolutely integrable, the **inversion formula**
 $x(t) = \int_{-\infty}^{\infty}X(f)\,e^{j2\pi ft}\,df$ holds at every point where
-$x$ is continuous. This is the continuous analogue of @prp-dtft-basics; its
-proof needs more analysis than this book uses, and can be found in any text on
-Fourier analysis. The transform extends to finite-energy signals, with
-Parseval's identity $\int|x(t)|^2dt = \int|X(f)|^2df$.
+$x$ is continuous. This is the continuous analogue of @prp-dtft-basics; it is
+proved as @thm-fourier-inversion. The transform extends to finite-energy
+signals, with Parseval's identity $\int|x(t)|^2dt = \int|X(f)|^2df$
+(@thm-plancherel).
 
 Two pairs are all that Part IV needs. For the rectangular pulse
 $\operatorname{rect}(t) = 1$ on $[-\frac12, \frac12]$ and $0$ elsewhere,
@@ -570,12 +572,12 @@ for f in [0.0, 0.25, 0.5, 0.9, 1.0, 1.5]:
 ```
 
 Finally, the warning of @sec-what-is-dsp: a nonzero signal that lasts a finite
-time is never bandlimited. If $x$ vanishes outside $[-a, a]$, its transform
-$X(f) = \int_{-a}^{a}x(t)e^{-j2\pi ft}dt$ can be expanded in a power series in $f$
-that converges for every complex $f$ (expand the exponential and integrate term
-by term). A function given by such a series that vanishes on a whole interval
-vanishes everywhere, by a standard theorem of complex analysis. So $X$ cannot be
-zero for all $|f| > f_{\max}$ unless $x = 0$. Real signals are therefore only
+time is never bandlimited. If $x$ vanishes outside $[-a, a]$, then
+$X(f) = \int_{-a}^{a}x(t)e^{-j2\pi ft}dt$ cannot vanish on any interval of
+frequencies unless $x = 0$: if it did, all the derivatives of $X$ would vanish
+there, which says that all the moments $\int x(t)\,t^k\,e^{-j2\pi f_0t}dt$ are zero,
+and a signal on $[-a, a]$ with all moments zero is zero
+(@thm-no-time-limited-bandlimited proves it). Real signals are therefore only
 approximately bandlimited, and anti-aliasing filters are always needed.
 
 ## Summary

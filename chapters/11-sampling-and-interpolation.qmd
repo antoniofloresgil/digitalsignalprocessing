@@ -142,8 +142,8 @@ X(f) = \sum_{n}c_n\,e^{-j2\pi nfT}, \qquad
 c_n = \frac{1}{F_s}\int_{-F_s/2}^{F_s/2}X(f)\,e^{j2\pi nfT}\,df = T\,x(nT),
 $$
 where the last equality is the inversion formula of the Fourier transform at
-$t = nT$. The Fourier series of a square-integrable function on an interval
-converges to it in mean square (a standard result of Fourier analysis, the
+$t = nT$ (@thm-fourier-inversion). The Fourier series of a square-integrable function on an interval
+converges to it in mean square (@thm-trig-complete, the
 infinite-dimensional version of @thm-orthonormal-expansion). Multiplying by
 $e^{j2\pi ft}$ and integrating over $[-F_s/2, F_s/2]$ is continuous for mean-square
 convergence (it is an inner product, @prp-l2-inner-product), so
@@ -192,9 +192,10 @@ $$
 substituting $f = (\frac{\omega}{2\pi} - k)F_s$ in each term and using
 $e^{j2\pi kF_snT} = 1$. So the $x[n]$ are the Fourier coefficients of $P$. Since
 they are absolutely summable, the series $\sum_nx[n]e^{-j\omega n}$ converges
-uniformly to a continuous function with the same Fourier coefficients, and
-two integrable periodic functions with the same Fourier coefficients agree
-almost everywhere; at points of continuity of $P$ they agree everywhere.
+uniformly to a continuous function with the same Fourier coefficients. $P$ is
+also continuous (a finite sum of translates of the continuous function $X$), and
+two continuous periodic functions with the same Fourier coefficients are equal
+(@thm-fourier-uniqueness).
 :::
 
 The spectrum of the samples is the analog spectrum, rescaled to

@@ -95,8 +95,10 @@ for expectations, $|\mathbb{E}[XY]| \le \sqrt{\mathbb{E}[X^2]\mathbb{E}[Y^2]}$.
 Expectations are averages over many realisations (**ensemble averages**). In
 practice we usually have *one* long realisation and compute **time averages**,
 such as $\frac1N\sum_nx[n + k]x[n]$. For the processes in this book, which are
-**ergodic**, time averages converge to ensemble averages. We do not need the
-general theory; we simply check it in each case.
+**ergodic**, time averages converge to ensemble averages. For the mean this is a
+theorem, @thm-mean-ergodic, which says exactly when it holds (it fails for a
+random constant); we do not need the general theory for other averages, and we
+simply check them in each case.
 
 ::: {#exm-ar1}
 ## A first-order autoregressive process

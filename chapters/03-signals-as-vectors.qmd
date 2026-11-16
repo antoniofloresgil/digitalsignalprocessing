@@ -432,8 +432,9 @@ geometry above (Cauchy–Schwarz, Pythagoras, projections onto subspaces with a
 finite orthonormal basis) holds without change. Infinite orthonormal bases need
 one more ingredient, the convergence of infinite expansions, which requires
 the space to be *complete*; $\ell^2(\mathbb{Z})$ is, and it is the standard
-example of a **Hilbert space**. The details are in Chapter 3 of
-@prandoni2008. We will only need the standard basis $\{\mathcal{S}^k\delta\}$,
+example of a **Hilbert space**. @sec-ap-hilbert proves the completeness
+(@thm-l2-complete) and the theory of infinite orthonormal expansions
+(@thm-hilbert-basis); Chapter 3 of @prandoni2008 develops the general setting. We will only need the standard basis $\{\mathcal{S}^k\delta\}$,
 for which the expansion is the reproducing formula.
 
 ## Correlation: inner products that slide

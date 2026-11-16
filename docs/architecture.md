@@ -126,3 +126,38 @@
   namespace found one assertion that depended on the random stream
   (chapter 10), now fixed; every cell of the book passes. The PDF is unaffected
   (the filter is registered for `live-html` only).
+
+## 2026-11-16: advanced proofs appendix
+
+- **What and why.** `appendices/advanced-proofs.qmd` proves the eleven results
+  that the chapters used to state without proof, or only sketch, because the
+  proof needs tools the chapter had not introduced: completeness of $\ell^2$ and
+  infinite orthonormal expansions, completeness of the trigonometric system
+  (Fejér), uniqueness of Fourier coefficients, the DTFT on $\ell^2$, Fourier
+  inversion, Plancherel, finite-duration signals are not bandlimited, Gibbs, the
+  uncertainty principle, the alternation theorem and the mean ergodic theorem.
+  The chapters now cite the appendix instead of "see Prandoni" or "a standard
+  result", keeping the rule that a result is either proved or pointed to where
+  it is proved.
+- **The only black boxes are five facts of Lebesgue integration**, listed at the
+  start of the appendix (completeness of $L^2$, density of continuous
+  functions, dominated/monotone convergence, Fubini, Lebesgue differentiation).
+  The book does not develop measure theory; every other step is proved.
+- **Real analysis instead of complex analysis** for "time-limited signals are not
+  bandlimited": vanishing derivatives give vanishing moments, and Weierstrass
+  density (proved from Fejér's theorem) finishes. This keeps the "no complex
+  analysis" promise of the preface.
+- **Experiments.** Every section ends with runnable cells whose `assert`s hold for
+  any seed (random cells were run with 60 different seeds), following the
+  live-cell rules of `AGENTS.md`.
+- **A correction found while writing it.** Chapter 9 said that the optimal error
+  alternates $L + 2$ times "where $L$ is the number of free coefficients"; the
+  correct count is $L + 2$ alternations for $L + 1$ free coefficients (a cosine
+  polynomial of degree $L$). The chapter now says so, and the appendix
+  confirms 17 alternations for the length-31 filter ($L = 15$).
+- **Pandoc pitfall.** A paragraph that starts with `(3)` is read as a numbered
+  list item, and a display equation inside it breaks the PDF; the equation must
+  be indented four spaces as list content.
+- **Pyodide integers are 32-bit.** `np.arange(a, b) ** 2` overflows silently when
+  the squares exceed $2^{31}$, which CPython (64-bit) hides; found by running
+  every cell of the appendix in Pyodide. Use `dtype=float` for such sums.

@@ -216,9 +216,10 @@ $$
 where $D$ is the desired response (1 in the passband, 0 in the stopband) and
 $E$ a weight. The **alternation theorem** characterises the solution: the
 optimal error ripples with equal height and attains its maximum, with
-alternating signs, at least $L + 2$ times, where $L$ is the number of free
-coefficients (see Section 7.2.2 of @prandoni2008 or @oppenheim2010 for the
-statement and proof). The **Parks–McClellan** algorithm, `signal.remez`,
+alternating signs, at least $L + 2$ times, where the amplitude
+$A(\omega) = \sum_{k=0}^{L}a_k\cos k\omega$ of a symmetric filter of length
+$2L + 1$ has $L + 1$ free coefficients. @thm-alternation states and proves it (see
+also Section 7.2.2 of @prandoni2008). The **Parks–McClellan** algorithm, `signal.remez`,
 computes it. We compare it with the Kaiser method for one specification:
 passband edge $0.25\pi$, stopband edge $0.30\pi$, $\delta_p = \delta_s = 0.001$
 (60 dB).

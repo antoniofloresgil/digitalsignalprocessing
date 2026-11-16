@@ -1,0 +1,1188 @@
+# Advanced Proofs {#sec-advanced-proofs}
+
+The chapters prove what their tools allow. Eleven results were stated there
+without a proof, or only sketched, because the proof needs something the
+chapter had not introduced: completeness of a function space, the Lebesgue
+integral, a theorem on approximation. This appendix proves all eleven. The
+chapters point here wherever they rely on one of them.
+
+You can read the book without this appendix. It is for readers who want to see
+why the results are true, and who are comfortable with the $\varepsilon$–$\delta$
+style of real analysis. Each section starts with where the result is used,
+states it exactly, proves it, and ends with a numerical experiment.
+
+| Result | Section | Used in |
+|--------|---------|---------|
+| Completeness of $\ell^2$, Bessel, infinite orthonormal expansions | @sec-ap-hilbert | @sec-signals-as-vectors |
+| Completeness of the trigonometric system; Fourier series converge in energy | @sec-ap-trig | @sec-spectral-analysis, @sec-sampling |
+| Uniqueness of Fourier coefficients | @sec-ap-uniqueness | @sec-sampling |
+| The DTFT of a finite-energy signal | @sec-ap-dtft-l2 | @sec-spectral-analysis |
+| Fourier inversion in continuous time | @sec-ap-inversion | @sec-spectral-analysis |
+| Plancherel's theorem | @sec-ap-plancherel | @sec-spectral-analysis |
+| A finite-duration signal is never bandlimited | @sec-ap-time-limited | @sec-spectral-analysis |
+| The Gibbs phenomenon | @sec-ap-gibbs | @sec-spectral-analysis |
+| The time–frequency uncertainty principle | @sec-ap-uncertainty | @sec-spectral-analysis |
+| The alternation theorem | @sec-ap-alternation | @sec-filter-design |
+| The mean ergodic theorem | @sec-ap-ergodic | @sec-noise |
+
+: The results proved in this appendix. {#tbl-advanced-results tbl-colwidths="[52,22,26]"}
+
+## What is assumed {#sec-ap-assumptions}
+
+From **real analysis**: limits and Cauchy sequences of numbers (every Cauchy
+sequence of real or complex numbers converges), uniform convergence, and the
+facts that a continuous function on a closed bounded interval is bounded,
+attains its maximum and is uniformly continuous.
+
+From the **Lebesgue integral** we use five facts without proof. They can be
+found in any text on measure theory, for example Rudin's *Real and Complex
+Analysis*. The integral of the chapters is the Riemann integral; the two agree
+whenever the Riemann integral exists, and the Lebesgue integral also behaves
+well under limits, which is what the proofs below need.
+
+- **(L1) Completeness.** For an interval, for $\mathbb{R}$, or for a probability
+  space, the space $L^2$ of functions with $\int|f|^2 < \infty$ (two functions
+  that are equal almost everywhere are identified) is complete for the inner
+  product $\langle f, g\rangle = \int f\bar g$.
+- **(L2) Density.** Continuous functions with bounded support are dense in $L^1$
+  and in $L^2$ of an interval or of $\mathbb{R}$.
+- **(L3) Dominated and monotone convergence.** If $f_n \to f$ pointwise and
+  $|f_n| \le g$ with $g$ integrable, then $\int f_n \to \int f$; and if
+  $0 \le f_n \uparrow f$, then $\int f_n \uparrow \int f$.
+- **(L4) Fubini.** The order of integration of $f(s,t)$ over a product can be
+  exchanged if $\iint|f| < \infty$ (or if $f \ge 0$).
+- **(L5) Lebesgue differentiation.** If $f$ is integrable on $[a,b]$ and
+  $\int_a^xf = 0$ for every $x$, then $f = 0$ almost everywhere.
+
+Everything else is proved. Inner products are complex,
+$\langle x, y\rangle = \sum x\bar y$, linear in the first argument; for real
+signals this is the inner product of @sec-signals-as-vectors, and the
+Cauchy–Schwarz inequality and the Pythagorean identity hold with the same
+proofs.
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import integrate, signal, special
+
+plt.rcParams["figure.figsize"] = (7, 3)
+```
+
+## Infinite orthonormal expansions {#sec-ap-hilbert}
+
+@sec-signals-as-vectors expanded vectors of $\mathbb{R}^N$ in orthonormal bases
+and said that infinite expansions need the space to be complete. Here is the
+definition, and the proof that $\ell^2(\mathbb{Z})$ is complete.
+
+::: {#def-hilbert}
+## Hilbert space
+
+A **Hilbert space** is a complex vector space $H$ with an inner product whose
+norm $\|x\| = \sqrt{\langle x, x\rangle}$ is **complete**: every Cauchy sequence
+($\|x_m - x_p\| \to 0$ as $m, p \to \infty$) converges to an element of $H$.
+:::
+
+::: {#thm-l2-complete}
+## $\ell^2(\mathbb{Z})$ is complete
+
+The space $\ell^2(\mathbb{Z})$ of sequences with $\sum_n|x[n]|^2 < \infty$ is a
+Hilbert space.
+:::
+
+::: {.proof}
+Let $(x^{(m)})$ be a Cauchy sequence. Given $\varepsilon > 0$ there is $M$ with
+$\|x^{(m)} - x^{(p)}\| < \varepsilon$ for $m, p \ge M$. For each $n$,
+$|x^{(m)}[n] - x^{(p)}[n]| \le \|x^{(m)} - x^{(p)}\|$, so $(x^{(m)}[n])_m$ is a
+Cauchy sequence of numbers and converges to a number $x[n]$. For every finite
+$N$ and $m, p \ge M$,
+$$
+\sum_{|n| \le N}\big|x^{(m)}[n] - x^{(p)}[n]\big|^2 < \varepsilon^2 .
+$$
+Let $p \to \infty$ (a finite sum) and then $N \to \infty$: for $m \ge M$,
+$\sum_n|x^{(m)}[n] - x[n]|^2 \le \varepsilon^2$. So $x^{(m)} - x \in \ell^2$, hence
+$x = x^{(m)} - (x^{(m)} - x) \in \ell^2$, and $\|x^{(m)} - x\| \le \varepsilon$ for
+$m \ge M$: the sequence converges to $x$.
+:::
+
+An orthonormal family $(e_k)$ can fail to span the space. In finite dimension,
+$N$ orthonormal vectors in an $N$-dimensional space always span it; in infinite
+dimension that is false, and the next two results separate what is always true
+(Bessel) from what holds only for complete families.
+
+::: {#prp-bessel}
+## Bessel's inequality
+
+Let $(e_k)_{k \in \mathbb{Z}}$ be an orthonormal family in an inner-product space
+and $\alpha_k = \langle x, e_k\rangle$. For every finite set $F$ of indices,
+$$
+\Big\|x - \sum_{k \in F}\gamma_ke_k\Big\|^2 = \|x\|^2 - \sum_{k \in F}|\alpha_k|^2 + \sum_{k \in F}|\gamma_k - \alpha_k|^2 .
+$$
+Hence $\sum_k|\alpha_k|^2 \le \|x\|^2$, and among all combinations of the $e_k$,
+$k \in F$, the closest to $x$ is the one with $\gamma_k = \alpha_k$.
+:::
+
+::: {.proof}
+Expand the squared norm using $\langle e_k, e_l\rangle = \delta_{kl}$ and
+$\langle x, e_k\rangle = \alpha_k$:
+$\|x\|^2 - 2\operatorname{Re}\sum_F\bar\gamma_k\alpha_k + \sum_F|\gamma_k|^2$, and
+$|\gamma_k - \alpha_k|^2 = |\gamma_k|^2 - 2\operatorname{Re}\bar\gamma_k\alpha_k + |\alpha_k|^2$.
+The identity follows by adding and subtracting $\sum_F|\alpha_k|^2$. The left
+side is nonnegative; taking $\gamma_k = \alpha_k$ gives
+$\sum_F|\alpha_k|^2 \le \|x\|^2$ for every finite $F$, hence for the whole series.
+:::
+
+::: {#thm-hilbert-basis}
+## Orthonormal bases of a Hilbert space
+
+Let $(e_k)_{k \in \mathbb{Z}}$ be an orthonormal family in a Hilbert space $H$,
+and write $S_K(x) = \sum_{|k| \le K}\langle x, e_k\rangle e_k$.
+
+a. For every $(\alpha_k) \in \ell^2(\mathbb{Z})$ the partial sums
+   $\sum_{|k| \le K}\alpha_ke_k$ converge in $H$ to an element $s$ with
+   $\langle s, e_k\rangle = \alpha_k$ and $\|s\|^2 = \sum_k|\alpha_k|^2$.
+b. The following four statements are equivalent, and then $(e_k)$ is called an
+   **orthonormal basis**:
+   (i) finite linear combinations of the $e_k$ are dense in $H$;
+   (ii) $S_K(x) \to x$ for every $x \in H$;
+   (iii) **Parseval**: $\|x\|^2 = \sum_k|\langle x, e_k\rangle|^2$ for every $x$;
+   (iv) the only $x$ with $\langle x, e_k\rangle = 0$ for all $k$ is $x = 0$.
+
+In that case $x \mapsto (\langle x, e_k\rangle)_k$ is a bijection of $H$ onto
+$\ell^2(\mathbb{Z})$ that preserves inner products.
+:::
+
+::: {.proof}
+(a) By Pythagoras, $\|\sum_{L < |k| \le K}\alpha_ke_k\|^2 = \sum_{L < |k| \le K}|\alpha_k|^2$,
+which tends to 0 as $L, K \to \infty$ because the series of $|\alpha_k|^2$
+converges: the partial sums are a Cauchy sequence, and $H$ is complete. The inner
+product and the norm are continuous (Cauchy–Schwarz), so
+$\langle s, e_k\rangle = \lim\langle\sum\alpha_le_l, e_k\rangle = \alpha_k$ and
+$\|s\|^2 = \lim\sum_{|k| \le K}|\alpha_k|^2$.
+
+(b) (i) $\Rightarrow$ (ii): given $x$ and $\varepsilon$, take a finite combination
+$t$ of the $e_k$ with $\|x - t\| < \varepsilon$. For $K$ large enough that $t$ only
+uses $e_k$ with $|k| \le K$, @prp-bessel says that $S_K(x)$ is at least as close
+to $x$ as $t$ is, so $\|x - S_K(x)\| < \varepsilon$, and the same holds for every
+larger $K$. (ii) $\Rightarrow$ (i): the $S_K(x)$ are finite combinations.
+(ii) $\Rightarrow$ (iii): $\|x\|^2 = \lim\|S_K(x)\|^2 = \sum|\langle x, e_k\rangle|^2$.
+(iii) $\Rightarrow$ (iv): if all $\langle x, e_k\rangle = 0$, then $\|x\|^2 = 0$.
+(iv) $\Rightarrow$ (ii): by (a), $S_K(x)$ converges to some $s$ with
+$\langle s, e_k\rangle = \langle x, e_k\rangle$ for all $k$; so $x - s$ is
+orthogonal to every $e_k$, and (iv) gives $x = s$.
+
+Under these conditions the map is linear and, by (iii), preserves norms, hence
+inner products (polarisation); it is onto by (a) and (ii).
+:::
+
+The standard basis $\{\delta[n - k]\}$ is an orthonormal basis of
+$\ell^2(\mathbb{Z})$, by (iv): a sequence orthogonal to every $\delta[n-k]$ has all
+its values zero. So the reproducing formula $x[n] = \sum_kx[k]\delta[n-k]$ converges
+in energy for every finite-energy $x$, which is what @sec-signals-as-vectors used.
+
+We can see all of this on a sequence that has finite energy but not finite sum,
+$x[n] = 1/n$ for $n \ge 1$. The error of the expansion after $K$ terms is the
+energy of the tail, and Bessel's inequality is strict for a family that is not
+complete.
+
+```{python}
+M = 1_000_000
+n = np.arange(1, M + 1)
+x = 1.0 / n                                       # finite energy (pi^2/6) but not summable
+
+print(f"||x||^2 = {np.sum(x**2):.6f}   (pi^2/6 = {np.pi**2 / 6:.6f})")
+print(f"sum |x| up to n = {M}: {x.sum():.2f}   (grows like ln M = {np.log(M):.2f}: x is not in l1)")
+print("     K   ||x - S_K||^2       1/K")
+for K in [10, 100, 1000, 10000]:
+    tail = np.sum(x[K:] ** 2)                     # S_K keeps x[1], ..., x[K]
+    print(f"{K:6d}   {tail:.8f}   {1 / K:.8f}")
+    assert abs(tail * K - 1) < 0.1                # the tail energy decays like 1/K
+
+even = x[1::2]                                    # <x, delta[n - 2k]>: the even positions only
+print(f"Bessel, family {{delta[n - 2k]}} (not complete): {np.sum(even**2):.6f} < {np.sum(x**2):.6f}")
+assert np.sum(even**2) < 0.5 * np.sum(x**2)
+```
+
+## Fourier series converge in energy {#sec-ap-trig}
+
+@sec-spectral-analysis introduced Fourier series and said that the partial sums
+are the best approximations in energy. That does not yet say that they
+*converge* to the signal. For this we need the trigonometric system to be an
+orthonormal basis (@thm-hilbert-basis, (i)). We work with $2\pi$-periodic
+functions of an angle $\theta$, with
+$$
+\langle f, g\rangle = \frac1{2\pi}\int_{-\pi}^{\pi}f(\theta)\overline{g(\theta)}\,d\theta,
+\qquad e_k(\theta) = e^{jk\theta}, \qquad c_k(f) = \langle f, e_k\rangle .
+$$
+The $e_k$ are orthonormal. A signal of period $T$ is brought to this form with
+$\theta = 2\pi t/T$. The key is a kernel that makes the averages of the partial
+sums positive.
+
+::: {#lem-fejer}
+## Fejér kernel
+
+For $N \ge 1$ let
+$F_N(\theta) = \sum_{|k| < N}\big(1 - \tfrac{|k|}{N}\big)e^{jk\theta}$. Then
+$F_N(\theta) = \frac1N\left(\frac{\sin(N\theta/2)}{\sin(\theta/2)}\right)^2 \ge 0$,
+$\frac1{2\pi}\int_{-\pi}^{\pi}F_N = 1$, and for every $\delta \in (0, \pi)$,
+$\sup_{\delta \le |\theta| \le \pi}F_N(\theta) \le \dfrac{1}{N\sin^2(\delta/2)}$.
+:::
+
+::: {.proof}
+$\big|\sum_{n=0}^{N-1}e^{jn\theta}\big|^2 = \sum_{n,m}e^{j(n-m)\theta}$, and the
+difference $n - m = k$ occurs $N - |k|$ times, so this equals $N F_N(\theta)$. The
+modulus of the geometric sum is $|\sin(N\theta/2)/\sin(\theta/2)|$
+(@exm-dtft-pulse-exponential), which gives the closed form and $F_N \ge 0$. Only
+$k = 0$ survives the integral of $e^{jk\theta}$, which gives the mean 1. For
+$|\theta| \ge \delta$, $\sin^2(\theta/2) \ge \sin^2(\delta/2)$ and
+$\sin^2(N\theta/2) \le 1$.
+:::
+
+::: {#thm-fejer}
+## Fejér's theorem
+
+Let $f$ be continuous and $2\pi$-periodic, and
+$\sigma_Nf(\theta) = \sum_{|k| < N}\big(1 - \tfrac{|k|}{N}\big)c_k(f)e^{jk\theta}$ the average of its first $N$ partial sums.
+Then $\sigma_Nf \to f$ uniformly. In particular, trigonometric polynomials are
+uniformly dense in the continuous periodic functions.
+:::
+
+::: {.proof}
+Substituting $c_k(f) = \frac1{2\pi}\int f(s)e^{-jks}ds$ gives
+$\sigma_Nf(\theta) = \frac1{2\pi}\int_{-\pi}^{\pi}f(s)F_N(\theta - s)\,ds = \frac1{2\pi}\int_{-\pi}^{\pi}f(\theta - s)F_N(s)\,ds$
+(periodicity). Since the mean of $F_N$ is 1,
+$$
+\sigma_Nf(\theta) - f(\theta) = \frac1{2\pi}\int_{-\pi}^{\pi}\big(f(\theta - s) - f(\theta)\big)F_N(s)\,ds .
+$$
+Given $\varepsilon > 0$, uniform continuity gives $\delta$ with
+$|f(\theta - s) - f(\theta)| < \varepsilon$ for $|s| < \delta$. The part of the
+integral over $|s| < \delta$ is at most $\varepsilon$ (because $F_N \ge 0$ has mean 1).
+Over $\delta \le |s| \le \pi$ it is at most $2\|f\|_\infty/(N\sin^2(\delta/2))$ by
+@lem-fejer, which is below $\varepsilon$ for $N$ large, whatever $\theta$ is.
+:::
+
+::: {#thm-trig-complete}
+## The trigonometric system is complete
+
+For every $f \in L^2(-\pi, \pi)$ the partial sums $S_Kf = \sum_{|k| \le K}c_ke_k$
+converge to $f$ in energy,
+$\frac1{2\pi}\int|f - S_Kf|^2 \to 0$, and
+$$
+\frac1{2\pi}\int_{-\pi}^{\pi}|f|^2 = \sum_{k = -\infty}^{\infty}|c_k|^2 \quad\text{(Parseval)}.
+$$
+Conversely every $(c_k) \in \ell^2(\mathbb{Z})$ is the coefficient sequence of exactly
+one $f \in L^2(-\pi, \pi)$.
+:::
+
+::: {.proof}
+By (L1), $L^2(-\pi, \pi)$ is a Hilbert space. Given $f$ and $\varepsilon$, (L2) gives
+a continuous $g$ vanishing near $\pm\pi$ (so its periodic extension is continuous)
+with $\|f - g\| < \varepsilon/2$, and @thm-fejer a trigonometric polynomial $t$
+with $\sup|g - t| < \varepsilon/2$, hence $\|g - t\| < \varepsilon/2$. So finite
+combinations of the $e_k$ are dense, which is (i) of @thm-hilbert-basis; everything
+else is (ii), (iii) and the last statement of that theorem.
+:::
+
+Fourier series of discontinuous signals converge in energy, even though not
+uniformly (Gibbs, @sec-ap-gibbs). Fejér's averages, in contrast, are positive
+averages of the signal, so they cannot overshoot.
+
+```{python}
+N = 1 << 14
+theta = -np.pi + 2 * np.pi * (np.arange(N) + 0.5) / N     # midpoints of N equal cells of (-pi, pi)
+
+def coefficients(f, Kmax):
+    """Fourier coefficients c_k, k = -Kmax..Kmax, as midpoint sums (exact for the grid inner product)."""
+    k = np.arange(-Kmax, Kmax + 1)
+    return k, np.exp(-1j * np.outer(k, theta)) @ f / N
+
+def partial_sum(f, K):
+    k, c = coefficients(f, K)
+    return (np.exp(1j * np.outer(theta, k)) @ c).real
+
+def fejer_mean(f, order):
+    k, c = coefficients(f, order - 1)
+    return (np.exp(1j * np.outer(theta, k)) @ (c * (1 - np.abs(k) / order))).real
+
+square = np.sign(theta)                                    # +1 on (0, pi), -1 on (-pi, 0)
+print("    K   ||f - S_K||^2   by Parseval   4/(pi^2 K)")
+for K in [15, 31, 63]:
+    direct = np.mean((square - partial_sum(square, K)) ** 2)
+    _, c = coefficients(square, K)
+    parseval = np.mean(square ** 2) - np.sum(np.abs(c) ** 2)
+    print(f"{K:5d}   {direct:.6f}        {parseval:.6f}      {4 / (np.pi ** 2 * K):.6f}")
+    assert np.isclose(direct, parseval)                    # the energy of the error is the energy of the tail
+```
+
+```{python}
+#| label: fig-fejer
+#| fig-cap: "A square wave, its Fourier partial sum with $K = 15$ (overshooting the jumps) and its Fejér mean (positive averages, never above 1). Both converge in energy; only the second converges without ripples."
+K = 15
+s_K, s_F = partial_sum(square, K), fejer_mean(square, K + 1)
+fig, ax = plt.subplots()
+ax.plot(theta, square, color="0.7", label="square wave")
+ax.plot(theta, s_K, lw=1, label=f"partial sum, K = {K}")
+ax.plot(theta, s_F, lw=1.5, label=f"Fejér mean, order {K + 1}")
+ax.set_xlabel(r"$\theta$"); ax.legend(loc="lower right", fontsize=8)
+plt.show()
+
+print(f"largest value of the partial sum: {s_K.max():.4f};  of the Fejér mean: {s_F.max():.4f}")
+assert s_K.max() > 1.05 and s_F.max() <= 1 + 1e-9
+
+triangle = np.abs(theta)                                   # continuous: Fejér converges uniformly
+errors = [np.max(np.abs(fejer_mean(triangle, order) - triangle)) for order in [4, 16, 64]]
+print("uniform error of the Fejér means of |theta|, orders 4, 16, 64:", np.round(errors, 4))
+assert errors[0] > errors[1] > errors[2]
+```
+
+## Fourier coefficients determine the signal {#sec-ap-uniqueness}
+
+The proof of @thm-aliasing identifies a function by its Fourier coefficients. The
+statement we need is that two functions with the same coefficients coincide.
+
+::: {#thm-fourier-uniqueness}
+## Uniqueness of Fourier coefficients
+
+a. If $f$ is continuous, $2\pi$-periodic, and all $c_k(f) = 0$, then $f = 0$. So
+   two continuous periodic functions with the same coefficients are equal.
+b. If $f$ is integrable on $(-\pi, \pi)$ and all $c_k(f) = 0$, then $f = 0$ almost
+   everywhere.
+:::
+
+::: {.proof}
+(a) All the Fejér means $\sigma_Nf$ vanish and converge uniformly to $f$
+(@thm-fejer).
+
+(b) Let $F(\theta) = \int_{-\pi}^{\theta}f(s)\,ds$, a continuous function. Since
+$c_0(f) = 0$, $F(\pi) = 0 = F(-\pi)$, so $F$ is continuous and $2\pi$-periodic.
+For $k \ne 0$, exchanging the order of integration (L4),
+$$
+\begin{aligned}
+\int_{-\pi}^{\pi}F(\theta)e^{-jk\theta}d\theta
+&= \int_{-\pi}^{\pi}f(s)\int_s^{\pi}e^{-jk\theta}d\theta\,ds \\
+&= \frac1{jk}\int_{-\pi}^{\pi}f(s)\big(e^{-jks} - e^{-jk\pi}\big)ds \\
+&= \frac{2\pi}{jk}c_k(f) - \frac{e^{-jk\pi}}{jk}\int f = 0 .
+\end{aligned}
+$$
+So $F - c_0(F)$ is continuous with all coefficients zero, hence identically zero by
+(a): $F$ is a constant, and since $F(-\pi) = 0$, $F \equiv 0$. Then
+$\int_{-\pi}^{x}f = 0$ for every $x$, and (L5) gives $f = 0$ almost everywhere.
+:::
+
+The computation in (b) is useful by itself: integrating a function divides its
+coefficients by $jk$, $c_k(F) = c_k(f)/(jk)$ for $k \ne 0$. The integral of a
+square wave is a triangle wave:
+
+```{python}
+square_integral = np.abs(theta) - np.pi                    # integral of sign(s) from -pi to theta
+k, c_f = coefficients(square, 9)
+_, c_F = coefficients(square_integral, 9)
+nonzero = k != 0
+print("  k    c_k(F)               c_k(f) / (j k)")
+for kk in [1, 2, 3, 5]:
+    i = kk + 9
+    print(f"{kk:3d}   {c_F[i]:.6f}   {c_f[i] / (1j * kk):.6f}")
+assert np.allclose(c_F[nonzero], c_f[nonzero] / (1j * k[nonzero]), atol=1e-3)
+```
+
+## The DTFT of a finite-energy signal {#sec-ap-dtft-l2}
+
+@def-dtft defined the DTFT of an absolutely summable signal, and
+@prp-dtft-basics proved the inversion formula for it. Many useful signals have
+finite energy but are not absolutely summable, like $1/n$. For them the series
+$\sum x[n]e^{-j\omega n}$ need not converge at every $\omega$.
+
+::: {#thm-dtft-l2}
+## DTFT on $\ell^2(\mathbb{Z})$
+
+For $x \in \ell^2(\mathbb{Z})$ the partial sums $X_N(\omega) = \sum_{|n| \le N}x[n]e^{-j\omega n}$
+converge in energy to a function $X \in L^2(-\pi, \pi)$, the DTFT of $x$, and
+
+- **Parseval:** $\sum_n|x[n]|^2 = \frac1{2\pi}\int_{-\pi}^{\pi}|X(e^{j\omega})|^2d\omega$,
+  and more generally $\sum_nx[n]\overline{y[n]} = \frac1{2\pi}\int X\bar Y$;
+- **inversion:** $x[n] = \frac1{2\pi}\int_{-\pi}^{\pi}X(e^{j\omega})e^{j\omega n}d\omega$;
+- every $X \in L^2(-\pi, \pi)$ is the DTFT of exactly one $x \in \ell^2(\mathbb{Z})$;
+- if $x$ is also absolutely summable, $X$ is the continuous function of
+  @prp-dtft-basics.
+:::
+
+::: {.proof}
+Apply @thm-hilbert-basis to $H = L^2(-\pi, \pi)$ and the family
+$e_n(\omega) = e^{-j\omega n}$, an orthonormal basis by @thm-trig-complete (the
+relabelling $n \to -n$ does not matter). Part (a) of that theorem says that, for
+$x \in \ell^2$, $\sum_{|n| \le N}x[n]e_n$ converges to $X$ with $\|X\|^2 = \sum|x[n]|^2$
+and $\langle X, e_n\rangle = x[n]$, which is the inversion formula. The last
+statement of the theorem gives the bijection and Parseval for two signals. If
+$x$ is absolutely summable, $X_N$ also converges uniformly to a continuous function
+(@prp-dtft-basics); uniform convergence implies convergence in energy, so the two
+limits agree almost everywhere, and everywhere since both are continuous.
+:::
+
+The DTFT of $x[n] = 1/n$, $n \ge 1$, has a closed form. Since
+$1 - e^{-j\omega} = 2\sin(\omega/2)\,e^{j(\pi - \omega)/2}$ for $0 < \omega < 2\pi$,
+$$
+X(e^{j\omega}) = \sum_{n \ge 1}\frac{e^{-j\omega n}}{n} = -\ln\big(1 - e^{-j\omega}\big) = -\ln\big(2\sin\tfrac\omega2\big) - j\,\frac{\pi - \omega}{2}.
+$$
+It is unbounded as $\omega \to 0$ (the series diverges there), yet it has finite
+energy, and Parseval holds:
+
+```{python}
+def X_closed(w):
+    """DTFT of x[n] = 1/n, n >= 1, for 0 < w < 2 pi."""
+    return -np.log(2 * np.sin(w / 2)) - 1j * (np.pi - w) / 2
+
+n = np.arange(1, 1_000_001)
+for w in [0.5, 1.0, 3.0]:
+    partial = np.sum(np.exp(-1j * w * n) / n)
+    print(f"w = {w}: partial sum with 10^6 terms {partial:.5f}   closed form {X_closed(w):.5f}")
+    assert abs(partial - X_closed(w)) < 1e-4
+
+half = integrate.quad(lambda w: abs(X_closed(w)) ** 2, 0, np.pi, limit=200)[0]
+energy = 2 * half / (2 * np.pi)                            # |X| is symmetric about pi
+print(f"(1/2 pi) * integral of |X|^2 = {energy:.8f}   sum of |x|^2 = pi^2/6 = {np.pi ** 2 / 6:.8f}")
+assert abs(energy - np.pi ** 2 / 6) < 1e-6
+```
+
+```{python}
+#| label: fig-dtft-l2
+#| fig-cap: "Magnitude of the DTFT of $x[n] = 1/n$, $n \\ge 1$ (thick), and of its partial sums $X_N$ with $N = 10$ and $N = 100$. The spectrum is unbounded at $\\omega = 0$, so no partial sum converges uniformly, but $X_N \\to X$ in energy."
+w = np.linspace(0.01, np.pi, 1500)
+fig, ax = plt.subplots()
+ax.plot(w, np.abs(X_closed(w)), lw=2.5, color="0.75", label=r"$|X|$")
+for N_terms in [10, 100]:
+    n_k = np.arange(1, N_terms + 1)
+    ax.plot(w, np.abs(np.exp(-1j * np.outer(w, n_k)) @ (1 / n_k)), lw=1, label=rf"$|X_N|$, $N = {N_terms}$")
+ax.set_xlabel(r"$\omega$"); ax.legend(fontsize=8)
+plt.show()
+
+for N_terms in [10, 100, 1000]:                            # the energy of the error is the energy of the tail
+    n_k = np.arange(1, N_terms + 1)
+    err = integrate.quad(lambda w: abs(X_closed(w) - np.sum(np.exp(-1j * w * n_k) / n_k)) ** 2, 0, np.pi, limit=400)[0] / np.pi
+    tail = np.sum(1.0 / np.arange(N_terms + 1, 2_000_001, dtype=float) ** 2)   # float: Pyodide integers are 32-bit
+    print(f"N = {N_terms:4d}: energy of X - X_N {err:.6f}   energy of the tail of x {tail:.6f}")
+    assert abs(err - tail) < 5e-3 * tail + 1e-6
+```
+
+## Fourier inversion in continuous time {#sec-ap-inversion}
+
+For $x \in L^1(\mathbb{R})$ the Fourier transform of @def-fourier-transform is
+defined at every $f$, with $|X(f)| \le \|x\|_1$, and it is continuous (by (L3):
+$e^{-j2\pi ft}$ is continuous in $f$ and bounded by 1). The inversion formula
+needs an extra ingredient: a *Gaussian* that we can transform exactly.
+
+::: {#lem-gaussian}
+## The Gaussian is its own Fourier transform
+
+For $g(t) = e^{-\pi t^2}$: $\int g = 1$ and $\int g(t)e^{-j2\pi ft}dt = e^{-\pi f^2}$
+for every real $f$. Consequently, for $\varepsilon > 0$ and
+$g_\varepsilon(t) = \frac1\varepsilon e^{-\pi t^2/\varepsilon^2}$ (mean 1, concentrating at 0 as
+$\varepsilon \to 0$),
+$$
+\int_{-\infty}^{\infty}e^{-\pi\varepsilon^2f^2}e^{j2\pi ft}\,df = g_\varepsilon(t).
+$$
+:::
+
+::: {.proof}
+$(\int g)^2 = \iint e^{-\pi(s^2 + t^2)}ds\,dt = \int_0^{2\pi}\int_0^\infty e^{-\pi r^2}r\,dr\,d\varphi = 1$ in polar
+coordinates (L4). Let $G(f) = \int g(t)e^{-j2\pi ft}dt$. Differentiating under the
+integral (allowed by (L3): the derivative of the integrand is bounded by
+$2\pi|t|e^{-\pi t^2}$, integrable) and using $-2\pi t\,g(t) = g'(t)$,
+$$
+\begin{aligned}
+G'(f) &= \int(-j2\pi t)g(t)e^{-j2\pi ft}dt = j\int g'(t)e^{-j2\pi ft}dt \\
+&= j\cdot j2\pi f\,G(f) = -2\pi f\,G(f),
+\end{aligned}
+$$
+where the integration by parts has no boundary term because $g \to 0$. So
+$(G(f)e^{\pi f^2})' = 0$ and $G(f) = G(0)e^{-\pi f^2} = e^{-\pi f^2}$. The last
+formula is this one after the substitution $u = \varepsilon f$ (the Gaussian is
+even, so the sign of the exponent does not matter).
+:::
+
+::: {#lem-approximate-identity}
+## The Gaussian as an approximate identity
+
+Let $h$ be measurable and continuous at $t$, and either bounded or integrable. Then
+$(h * g_\varepsilon)(t) = \int h(s)g_\varepsilon(t - s)ds \to h(t)$ as $\varepsilon \to 0$.
+:::
+
+::: {.proof}
+Since $\int g_\varepsilon = 1$, $(h * g_\varepsilon)(t) - h(t) = \int(h(t - s) - h(t))g_\varepsilon(s)ds$.
+Given $\eta > 0$ choose $\delta$ with $|h(t - s) - h(t)| < \eta$ for $|s| < \delta$.
+That part contributes at most $\eta$. The part $|s| \ge \delta$ is at most
+$(\|h\|_\infty + |h(t)|)\int_{|u| \ge \delta/\varepsilon}g(u)du$ if $h$ is bounded, and at most
+$\|h\|_1\frac1\varepsilon e^{-\pi\delta^2/\varepsilon^2} + |h(t)|\int_{|u| \ge \delta/\varepsilon}g(u)du$
+if $h$ is integrable (there $g_\varepsilon(s) \le \frac1\varepsilon e^{-\pi\delta^2/\varepsilon^2}$ for $|s| \ge \delta$).
+Both tend to 0 as $\varepsilon \to 0$.
+:::
+
+::: {#thm-fourier-inversion}
+## Fourier inversion
+
+Let $x \in L^1(\mathbb{R})$ with $X \in L^1(\mathbb{R})$. Then
+$x(t) = \int_{-\infty}^{\infty}X(f)e^{j2\pi ft}df$ at every $t$ where $x$ is
+continuous (so everywhere if $x$ is continuous), and the two sides are equal
+almost everywhere. In particular, if $X = 0$ then $x = 0$ almost everywhere.
+:::
+
+::: {.proof}
+Fix $\varepsilon > 0$. By Fubini (the integrand is dominated by
+$|x(s)|e^{-\pi\varepsilon^2f^2}$, integrable on $\mathbb{R}^2$) and @lem-gaussian,
+$$
+\int X(f)e^{-\pi\varepsilon^2f^2}e^{j2\pi ft}df = \int x(s)\int e^{-\pi\varepsilon^2f^2}e^{j2\pi f(t - s)}df\,ds = (x * g_\varepsilon)(t).
+$$
+As $\varepsilon \to 0$ the left side tends to $\varphi(t) = \int X(f)e^{j2\pi ft}df$ by dominated
+convergence ($|X| \in L^1$). If $x$ is continuous at $t$, the right side tends to
+$x(t)$ by @lem-approximate-identity ($x$ is integrable), so $x(t) = \varphi(t)$.
+For the almost-everywhere statement, $\|x * g_\varepsilon - x\|_1 \le \int\phi(s)g_\varepsilon(s)ds$ with
+$\phi(s) = \|x(\cdot - s) - x\|_1$, which is bounded by $2\|x\|_1$ and continuous at
+$0$ with $\phi(0) = 0$ (@lem-translation below); by @lem-approximate-identity
+the bound tends to 0. So $x * g_\varepsilon \to x$ in $L^1$, a subsequence converges
+almost everywhere to $x$, and it also converges to $\varphi$: $x = \varphi$ almost
+everywhere. With $X = 0$ we get $x = 0$ almost everywhere.
+:::
+
+::: {#lem-translation}
+## Continuity of translation
+
+For $x \in L^p(\mathbb{R})$, $p = 1, 2$: $\|x(\cdot - s) - x\|_p \to 0$ as $s \to 0$.
+:::
+
+::: {.proof}
+For a continuous $\phi$ with bounded support the statement follows from uniform
+continuity (the integrand vanishes outside a fixed bounded set and is uniformly
+small). For general $x$ and $\varepsilon > 0$ take such a $\phi$ with
+$\|x - \phi\|_p < \varepsilon$ (L2); translation does not change the norm, so
+$\|x(\cdot - s) - x\|_p \le 2\varepsilon + \|\phi(\cdot - s) - \phi\|_p$.
+:::
+
+An experiment. The pulse $x(t) = e^{-|t|}$ has $X(f) = 2/(1 + (2\pi f)^2)$, which
+is integrable, so inversion recovers $x$ at every point, including the corner at
+$0$. The rectangle has $X(f) = \operatorname{sinc} f$, which is not absolutely
+integrable and is outside the hypotheses; the *smoothed* inversion
+$(\text{rect} * g_\varepsilon)(t)$ of the proof still converges, to the value of the
+rectangle at its continuity points and to the midpoint $\tfrac12$ at the jump.
+
+```{python}
+t = np.linspace(-30, 30, 600_001)
+dt = t[1] - t[0]
+
+def numeric_transform(values, f):
+    return np.sum(values * np.exp(-2j * np.pi * f * t)) * dt
+
+for f in [0.0, 0.5, 1.0]:                                  # the Gaussian is its own transform
+    num = numeric_transform(np.exp(-np.pi * t ** 2), f)
+    print(f"f = {f}: transform of exp(-pi t^2) = {num.real:.10f}   exp(-pi f^2) = {np.exp(-np.pi * f ** 2):.10f}")
+    assert abs(num - np.exp(-np.pi * f ** 2)) < 1e-9
+
+X_exp = lambda f: 2 / (1 + (2 * np.pi * f) ** 2)           # transform of exp(-|t|)
+for f in [0.0, 0.3, 1.0]:
+    assert abs(numeric_transform(np.exp(-np.abs(t)), f) - X_exp(f)) < 1e-4
+
+print("inversion of X(f) = 2 / (1 + (2 pi f)^2):")
+for tt in [0.0, 0.5, 2.0]:
+    if tt == 0:
+        rec = 2 * integrate.quad(X_exp, 0, np.inf)[0]
+    else:
+        rec = 2 * integrate.quad(X_exp, 0, np.inf, weight="cos", wvar=2 * np.pi * tt)[0]
+    print(f"  t = {tt}: {rec:.8f}   exp(-|t|) = {np.exp(-abs(tt)):.8f}")
+    assert abs(rec - np.exp(-abs(tt))) < 1e-6
+
+def smoothed_inversion(tt, eps):
+    """Integral of sinc(f) exp(-pi eps^2 f^2) exp(j 2 pi f tt) over f: the rectangle seen through g_eps."""
+    df = 1e-3
+    f = (np.arange(int(4 / eps / df)) + 0.5) * df
+    return 2 * np.sum(np.sinc(f) * np.exp(-np.pi * eps ** 2 * f ** 2) * np.cos(2 * np.pi * f * tt)) * df
+
+print("smoothed inversion of sinc(f); the rectangle is 1 on |t| < 1/2 and 0 outside")
+print("   eps     t = 0.25      t = 0.5 (jump)     t = 1")
+for eps in [0.1, 0.03, 0.01]:
+    values = [smoothed_inversion(tt, eps) for tt in [0.25, 0.5, 1.0]]
+    print(f"  {eps:5.2f}   {values[0]:9.6f}     {values[1]:9.6f}       {values[2]:9.6f}")
+assert abs(values[0] - 1) < 1e-3 and abs(values[1] - 0.5) < 1e-3 and abs(values[2]) < 1e-3
+```
+
+## Plancherel's theorem {#sec-ap-plancherel}
+
+@def-fourier-transform needs $x$ to be absolutely integrable. Finite-energy
+signals, such as $\operatorname{sinc}(t)$, are not always integrable. The theorem
+that extends the transform to them, with Parseval's identity, is the
+continuous-time counterpart of @thm-dtft-l2.
+
+::: {#thm-plancherel}
+## Plancherel
+
+If $x \in L^1(\mathbb{R}) \cap L^2(\mathbb{R})$ then $X \in L^2(\mathbb{R})$ and
+$\int|X(f)|^2df = \int|x(t)|^2dt$. The map $x \mapsto X$ extends in a unique way
+to a linear map $\mathcal{F}\colon L^2(\mathbb{R}) \to L^2(\mathbb{R})$ that preserves norms
+and inner products; it is onto, and $\mathcal{F}^{-1}X(t) = \mathcal{F}X(-t)$. So
+every finite-energy signal has a Fourier transform with the same energy, and the
+inversion formula holds in the energy sense.
+:::
+
+::: {.proof}
+*Step 1: energy for $x \in L^1 \cap L^2$.* Let $r(t) = \int x(s + t)\overline{x(s)}ds$. Then
+$|r| \le \|x\|_2^2$; $r$ is continuous, because
+$|r(t) - r(t')| \le \|x(\cdot + t) - x(\cdot + t')\|_2\|x\|_2 \to 0$ by @lem-translation;
+and $\int|r| \le \iint|x(s + t)||x(s)|ds\,dt = \|x\|_1^2$ (L4), so $r \in L^1$. By
+Fubini, with $u = s + t$,
+$$
+\int r(t)e^{-j2\pi ft}dt = \int x(u)e^{-j2\pi fu}du\int\overline{x(s)}e^{j2\pi fs}ds = X(f)\overline{X(f)} = |X(f)|^2 .
+$$
+*Step 2.* For $\varepsilon > 0$, the identity in the proof of @thm-fourier-inversion
+(which does not need $|X| \in L^1$, only $r \in L^1$) at $t = 0$ reads
+$$
+\int|X(f)|^2e^{-\pi\varepsilon^2f^2}df = (r * g_\varepsilon)(0) .
+$$
+As $\varepsilon \to 0$ the left side increases to $\int|X|^2$ (monotone convergence), and the
+right side tends to $r(0) = \|x\|_2^2$ by @lem-approximate-identity ($r$ is bounded,
+integrable and continuous). So $\int|X|^2 = \|x\|_2^2$.
+
+*Step 3: extension.* $L^1 \cap L^2$ is dense in $L^2$: $x\mathbf{1}_{[-n,n]} \to x$ in
+energy by dominated convergence. A norm-preserving linear map from a dense subspace
+into the complete space $L^2$ (L1) extends uniquely to a norm-preserving map of
+$L^2$: send a limit of $x_n$ to the limit of $\mathcal{F}x_n$, a Cauchy sequence. Inner products
+are preserved by polarisation.
+
+*Step 4: onto.* Let $D$ be the set of $x \in L^1 \cap L^2$ with $X \in L^1$. If
+$x \in L^1 \cap L^2$ then $x * g_\varepsilon \in D$: it is integrable and bounded, hence in $L^1 \cap L^2$,
+and its transform is $X(f)e^{-\pi\varepsilon^2f^2}$ (Fubini and @lem-gaussian), which is
+integrable. Moreover $\|x * g_\varepsilon - x\|_2 = \|X(e^{-\pi\varepsilon^2f^2} - 1)\|_2 \to 0$
+by Step 2 and dominated convergence. So $D$ is dense in $L^2$. For $x \in D$ we have
+$X \in L^1 \cap L^2$ and, by @thm-fourier-inversion, $\mathcal{F}X(t) = \int X(f)e^{-j2\pi ft}df = x(-t)$
+for almost every $t$. So the range of $\mathcal{F}$ contains the reversals of all the
+elements of $D$, a dense set. The range is closed (the isometric image of a complete
+space is complete), hence it is all of $L^2$, and $\mathcal{F}\mathcal{F}x = x(-\cdot)$ extends from $D$ to
+$L^2$ by continuity.
+:::
+
+The function $\operatorname{sinc}(t)$ has finite energy (it is the signal of
+@sec-what-is-dsp that rebuilds a bandlimited signal) but is not integrable. Its
+transform, in the energy sense, is $\operatorname{rect}(f)$, the limit of the
+transforms of the truncations $\operatorname{sinc}(t)\mathbf{1}_{[-A, A]}$. The truncated transform has the
+closed form $X_A(f) = \frac1\pi\big[\operatorname{Si}(\pi(1 + 2f)A) + \operatorname{Si}(\pi(1 - 2f)A)\big]$,
+by $\operatorname{sinc}(t)\cos(2\pi ft) = \frac1{2\pi t}\big[\sin(\pi(1 + 2f)t) + \sin(\pi(1 - 2f)t)\big]$
+and $\int_{-A}^{A}\frac{\sin(at)}{t}dt = 2\operatorname{Si}(aA)$.
+
+```{python}
+def X_A(f, A):
+    si = lambda z: special.sici(z)[0]
+    return (si(np.pi * (1 + 2 * f) * A) + si(np.pi * (1 - 2 * f) * A)) / np.pi
+
+df = 0.0005
+f = np.arange(-40, 40, df) + df / 2
+rect = (np.abs(f) < 0.5).astype(float)
+print("     A   ||X_A - rect||^2   A * error   max of X_A")
+errs = []
+for A in [5, 20, 80]:
+    err = np.sum(np.abs(X_A(f, A) - rect) ** 2) * df
+    errs.append(err)
+    print(f"{A:6d}   {err:.6f}        {A * err:.4f}      {X_A(f, A).max():.4f}")
+assert all(a > b for a, b in zip(errs, errs[1:])) and errs[-1] < errs[0] / 10
+assert abs(80 * errs[-1] - 1 / np.pi ** 2) < 0.01          # the energy error decays like 1 / (pi^2 A)
+assert X_A(f, 80).max() > 1.08                              # Gibbs: the pointwise overshoot never goes away
+
+energy_exp = integrate.quad(lambda f: 4 / (1 + (2 * np.pi * f) ** 2) ** 2, -np.inf, np.inf)[0]
+print(f"Parseval for exp(-|t|): energy of the pulse 1, energy of the transform {energy_exp:.8f}")
+assert abs(energy_exp - 1) < 1e-8
+```
+
+## A finite-duration signal is never bandlimited {#sec-ap-time-limited}
+
+@sec-spectral-analysis warned that a nonzero signal that lasts a finite time has
+a spectrum that is nonzero beyond every frequency. The chapter sketched the proof
+with complex analysis. Here is a proof with the tools of this appendix.
+
+::: {#thm-no-time-limited-bandlimited}
+## Time-limited signals are not bandlimited
+
+Let $x \in L^1(\mathbb{R})$ vanish outside $[-a, a]$. If $X(f) = 0$ for all $f$ in
+some nonempty open interval, then $x = 0$ almost everywhere. In particular, if
+$X(f) = 0$ for $|f| > B$, then $x = 0$.
+:::
+
+::: {.proof}
+*Step 1: moments vanish.* Let $f_0$ be a point of the interval and
+$y(t) = x(t)e^{-j2\pi f_0t}$, so $Y(u) = X(f_0 + u) = 0$ for $|u|$ small. For every
+$k$, $|t|^k|y(t)| \le a^k|x(t)|$ is integrable, so $Y$ can be differentiated $k$
+times under the integral sign (L3) and
+$$
+0 = Y^{(k)}(0) = (-j2\pi)^k\int y(t)\,t^k\,dt, \qquad k = 0, 1, 2, \dots
+$$
+Hence $\int y\,p = 0$ for every polynomial $p$.
+
+*Step 2: polynomials are dense (Weierstrass).* Let $g$ be continuous on
+$[-a, a]$. Extend it linearly on $[a, 3a]$ from $g(a)$ to $g(-a)$ and
+periodically with period $4a$; the result is continuous. By @thm-fejer, after the
+change of variable $\theta = 2\pi t/(4a)$, there is a trigonometric polynomial
+$T(t) = \sum d_ke^{j\pi kt/(2a)}$ with $\sup|g - T| < \varepsilon$. Each
+exponential is the uniform limit on $[-a, a]$ of its Taylor polynomials, so there is a
+polynomial $p$ with $\sup_{[-a,a]}|T - p| < \varepsilon$, and $\sup|g - p| < 2\varepsilon$.
+
+*Step 3.* Then $|\int y g| = |\int y(g - p)| \le 2\varepsilon\|y\|_1$ for every $\varepsilon$, so
+$\int_{-a}^{a}yg = 0$ for every continuous $g$. Take for $g$ the continuous function
+that is 1 on $[-a, c]$, 0 beyond $c + 1/m$ and linear in between, and let
+$m \to \infty$ (L3): $\int_{-a}^{c}y = 0$ for every $c$. By (L5), $y = 0$ almost
+everywhere, hence $x = 0$ almost everywhere.
+:::
+
+(With complex analysis, the argument is two lines: $X$ extends to an entire
+function, and an entire function that vanishes on an interval vanishes
+everywhere.) The theorem says that exact bandlimitation is out of reach for any
+signal we can record, but it does not say how close we can get. In the discrete
+shadow of the problem, a vector of $n$ samples $c$ of a signal supported on
+$[-1, 1]$ has spectrum $\sum_kc_ke^{-j2\pi ft_k}$ on the band $[2, 4]$ Hz; this is a
+matrix $A$ with distinct sample times, so it has full column rank, and no nonzero $c$ can
+vanish on the band. But the smallest singular value, the ratio of leakage to size
+for the best $c$, decays quickly:
+
+```{python}
+def smallest_singular_value(n_points):
+    t_k = -1 + 2 * (np.arange(n_points) + 0.5) / n_points     # sample times in [-1, 1]
+    f_band = np.linspace(2, 4, 400)                            # the band where we want no spectrum
+    A = np.exp(-2j * np.pi * np.outer(f_band, t_k)) / np.sqrt(len(f_band))
+    return np.linalg.svd(A, compute_uv=False)[-1]
+
+values = [smallest_singular_value(p) for p in range(4, 13)]
+print("samples   smallest singular value")
+for p, v in zip(range(4, 13), values):
+    print(f"{p:7d}   {v:.3e}")
+assert all(v > 1e-12 for v in values)                          # never zero: no exact bandlimitation
+assert values[-1] < 1e-3 * values[0]                           # but a good approximation is possible
+```
+
+## The Gibbs phenomenon {#sec-ap-gibbs}
+
+@sec-spectral-analysis measured that Fourier partial sums of a square wave
+overshoot the jump by about 9 % of its height, and that the overshoot does not
+shrink. We prove it for the square wave of period 1 and amplitude 1,
+$q(t) = 1$ on $(0, \frac12)$ and $-1$ on $(\frac12, 1)$, whose partial sums are
+$$
+S_m(t) = \frac4\pi\sum_{i=1}^{m}\frac{\sin(2\pi(2i - 1)t)}{2i - 1}
+$$
+(the first $m$ odd harmonics, that is, $K = 2m - 1$ in the chapter).
+
+::: {#thm-gibbs}
+## Gibbs phenomenon
+
+For every $m \ge 1$, the maximum of $S_m$ on $[0, \tfrac12]$ is attained at
+$t_m^* = \frac1{4m}$ and equals
+$$
+S_m\big(t_m^*\big) = \frac1{\pi m}\int_0^{\pi}\frac{\sin u}{\sin(u/2m)}du \;\longrightarrow\; \frac2\pi\operatorname{Si}(\pi) = 1.17898\ldots
+\quad (m \to \infty).
+$$
+So the overshoot above the value 1, which is $0.17898$, i.e. $0.0895$ times the jump
+height $2$, does not tend to 0; the peak just moves towards the jump.
+:::
+
+::: {.proof}
+*Derivative.* $S_m'(t) = 8\sum_{i=1}^{m}\cos(2\pi(2i - 1)t)$. The identity
+$2\sin\vartheta\cos((2i - 1)\vartheta) = \sin(2i\vartheta) - \sin((2i - 2)\vartheta)$ telescopes to
+$2\sin\vartheta\sum_{i=1}^m\cos((2i - 1)\vartheta) = \sin(2m\vartheta)$, so with
+$\vartheta = 2\pi t$,
+$$
+S_m'(t) = \frac{4\sin(4\pi mt)}{\sin(2\pi t)}, \qquad 0 < t < \tfrac12 .
+$$
+It vanishes exactly at $t_j = j/(4m)$, $j = 1, \dots, 2m - 1$, and is positive on
+$(0, t_1)$, so $t_1 = t_m^*$ is the first local maximum.
+
+*It is the largest.* Termwise, $S_m(\tfrac12 - t) = S_m(t)$ (for odd $k$,
+$\sin(\pi k - 2\pi kt) = \sin(2\pi kt)$), so it is enough to look at $[0, \tfrac14]$. There
+$S_m(t_{j+1}) - S_m(t_j) = I_j$, the integral of $S_m'$ over $[t_j, t_{j+1}]$, where
+$I_j$ alternates in sign (positive for odd $j$) and $|I_j|$ decreases with $j$,
+because the numerator $|\sin(4\pi ms)|$ repeats the same arch on each interval while
+$1/\sin(2\pi s)$ decreases on $(0, \frac14]$. So the values at the odd $t_j$ decrease,
+$S_m(t_{j+2}) - S_m(t_j) = I_j + I_{j+1} < 0$; the values at the even $t_j$ are
+minima; and $S_m(0) = 0$. The largest value is $S_m(t_1)$.
+
+*Value and limit.* $S_m(t_1) = \int_0^{1/4m}S_m'(s)ds$, and the substitution
+$u = 4\pi ms$ gives the stated integral. For $0 < u \le \pi$ the inequality
+$\sin v \ge 2v/\pi$ on $[0, \frac\pi2]$ gives $0 < \frac1{m\sin(u/2m)} \le \frac\pi u$, so the
+integrand is bounded by $|\sin u|/u \le 1$, and it converges pointwise to
+$\frac{2\sin u}{\pi u}$ because $m\sin(u/2m) \to u/2$. By dominated convergence the
+integral tends to $\frac2\pi\int_0^\pi\frac{\sin u}{u}du = \frac2\pi\operatorname{Si}(\pi)$.
+:::
+
+The same overshoot appears at every jump of a piecewise smooth signal, because
+subtracting a scaled and shifted copy of the square wave removes the jump and
+leaves a signal whose partial sums converge uniformly near it. We check the
+theorem against the partial sums themselves:
+
+```{python}
+def S(t, m):
+    k = np.arange(1, 2 * m, 2)                                 # odd harmonics 1, 3, ..., 2m - 1
+    return (4 / np.pi) * np.sin(2 * np.pi * np.outer(t, k)) @ (1 / k)
+
+def peak_formula(m):
+    return integrate.quad(lambda u: np.sin(u) / np.sin(u / (2 * m)), 0, np.pi)[0] / (np.pi * m)
+
+limit = 2 * special.sici(np.pi)[0] / np.pi
+print("    m   max of S_m on [0, 1/2]   S_m(1/4m)    formula     limit")
+for m in [3, 10, 100]:
+    grid = np.linspace(0, 0.5, 40001)
+    peak = S(grid, m).max()
+    at_t1 = S(np.array([1 / (4 * m)]), m)[0]
+    print(f"{m:5d}   {peak:.6f}             {at_t1:.6f}    {peak_formula(m):.6f}    {limit:.6f}")
+    assert abs(peak - at_t1) < 1e-6 and abs(at_t1 - peak_formula(m)) < 1e-9
+for m in [1000, 100000]:
+    print(f"{m:5d}   (formula only)                       {peak_formula(m):.6f}")
+assert abs(peak_formula(100000) - limit) < 1e-4
+```
+
+## The time–frequency uncertainty principle {#sec-ap-uncertainty}
+
+@sec-spectral-analysis explained that a segment of $L$ samples cannot be sharp
+both in time and in frequency. The precise statement measures the *spread* of a
+signal in each domain by the standard deviation of its energy. For a signal of
+unit energy,
+$$
+\Delta t^2 = \int t^2|x(t)|^2dt, \qquad \Delta f^2 = \int f^2|X(f)|^2df .
+$$
+
+::: {#thm-uncertainty}
+## Uncertainty principle
+
+Let $x \in L^1 \cap L^2(\mathbb{R})$ with $\|x\|_2 = 1$ be locally absolutely
+continuous ($x(t) - x(0) = \int_0^tx'$), with $x' \in L^1 \cap L^2$ and
+$t\,x(t) \in L^2$. Then
+$$
+\Delta t\,\Delta f \ge \frac1{4\pi},
+$$
+with equality exactly for the Gaussians $x(t) = Ce^{-\lambda t^2/2}$, $\lambda > 0$.
+The same bound holds for the spreads around any centres $t_0$ and $f_0$,
+$\int(t - t_0)^2|x|^2$ and $\int(f - f_0)^2|X|^2$ (apply the theorem to
+$x(t + t_0)e^{-j2\pi f_0(t + t_0)}$, whose magnitudes are those of $x$ and $X$
+shifted).
+:::
+
+::: {.proof}
+*Time side.* The function $|x|^2$ is locally absolutely continuous with
+$(|x|^2)' = 2\operatorname{Re}(\bar xx')$. For $R > 0$,
+$$
+\int_{-R}^{R}|x|^2dt = R\big(|x(R)|^2 + |x(-R)|^2\big) - 2\operatorname{Re}\int_{-R}^{R}t\,\bar x(t)x'(t)\,dt .
+$$
+Since $\int|x|^2 < \infty$, the boundary term $b(R) = R(|x(R)|^2 + |x(-R)|^2)$ cannot
+stay above some $c > 0$ for all large $R$ (the integrand $b(R)/R \ge c/R$ would not
+be integrable), so $b(R_n) \to 0$ along some $R_n \to \infty$. The integral
+$\int t\bar xx'$ converges absolutely by Cauchy–Schwarz, because $tx$ and $x'$ are in
+$L^2$. Letting $n \to \infty$,
+$$
+1 = -2\operatorname{Re}\int t\,\bar x\,x'\,dt \le 2\Big|\int t\,\bar x\,x'\,dt\Big| \le 2\,\|tx\|_2\,\|x'\|_2 = 2\,\Delta t\,\|x'\|_2 .
+$$
+*Frequency side.* $x(t) = x(0) + \int_0^tx'$ has limits at $\pm\infty$ since
+$x' \in L^1$, and the limits are 0 because $x \in L^1$. Integrating by parts,
+the transform of $x'$ is $j2\pi fX(f)$, so by @thm-plancherel
+$\|x'\|_2 = 2\pi\|fX\|_2 = 2\pi\Delta f$. Together, $1 \le 4\pi\,\Delta t\,\Delta f$.
+
+*Equality* requires equality in Cauchy–Schwarz, $x' = \mu\,t\,x$ for a constant
+$\mu$, and $\int t\bar xx' = \mu\Delta t^2$ real and negative: $\mu = -\lambda$ with
+$\lambda > 0$, whose solutions are $Ce^{-\lambda t^2/2}$. Conversely, for such a
+Gaussian $\Delta t^2 = 1/(2\lambda)$ and $|X|^2 \propto e^{-4\pi^2f^2/\lambda}$, so
+$\Delta f^2 = \lambda/(8\pi^2)$ and $\Delta t\,\Delta f = 1/(4\pi)$.
+:::
+
+The theorem is invariant under dilations, as it must be: stretching a pulse in
+time by $s$ multiplies $\Delta t$ by $s$ and divides $\Delta f$ by $s$. A Hann window
+of a longer segment is more selective in frequency and less selective in time, by
+exactly the same factor. We measure the product for several pulses:
+
+```{python}
+T_span, N_pts = 80.0, 1 << 17
+t_grid = (np.arange(N_pts) - N_pts // 2) * (T_span / N_pts)
+dt_grid = T_span / N_pts
+f_grid = np.fft.fftfreq(N_pts, d=dt_grid)                  # frequencies of the FFT bins (order irrelevant for sums)
+
+def spreads(x):
+    """Time and frequency spreads of a pulse sampled on t_grid, normalised to unit energy."""
+    x = x / np.sqrt(np.sum(np.abs(x) ** 2) * dt_grid)
+    X = np.fft.fft(np.fft.ifftshift(x)) * dt_grid          # only |X| is needed, so the phase of the origin is irrelevant
+    spread_t = np.sqrt(np.sum(t_grid ** 2 * np.abs(x) ** 2) * dt_grid)
+    spread_f = np.sqrt(np.sum(f_grid ** 2 * np.abs(X) ** 2) / T_span)
+    return spread_t, spread_f
+
+pulses = {
+    "Gaussian": np.exp(-np.pi * t_grid ** 2),
+    "Gaussian, 3 times wider": np.exp(-np.pi * (t_grid / 3) ** 2),
+    "Hann pulse": np.where(np.abs(t_grid) < 0.5, np.cos(np.pi * t_grid) ** 2, 0.0),
+    "triangle": np.maximum(1 - np.abs(t_grid), 0.0),
+    "sech": 1 / np.cosh(t_grid),
+    "exp(-|t|)": np.exp(-np.abs(t_grid)),
+}
+bound = 1 / (4 * np.pi)
+print(f"pulse                      dt       df     dt * df    (bound 1/4pi = {bound:.5f})")
+for name, x in pulses.items():
+    dt_sp, df_sp = spreads(x)
+    print(f"{name:25s}  {dt_sp:.4f}  {df_sp:.4f}   {dt_sp * df_sp:.5f}")
+    assert dt_sp * df_sp >= bound - 1e-4
+    if name.startswith("Gaussian"):
+        assert abs(dt_sp * df_sp - bound) < 1e-4            # equality, as the theorem says
+```
+
+## The alternation theorem {#sec-ap-alternation}
+
+@sec-filter-design designed FIR filters with the Parks–McClellan algorithm and
+characterised its solution with the alternation theorem, quoted from the
+literature. A linear-phase FIR filter of odd length $2L + 1$ with symmetric
+coefficients has the frequency response $e^{-j\omega L}A(\omega)$, where the real
+**amplitude** is
+$$
+A(\omega) = \sum_{k=0}^{L}a_k\cos k\omega, \qquad a_0 = h[L],\quad a_k = 2h[L + k],
+$$
+a cosine polynomial with $L + 1$ free coefficients. Let $K \subset [0, \pi]$ be the
+(compact) union of the passband and stopband, $D$ the desired amplitude (1 on the
+passband, 0 on the stopband) and $W > 0$ a weight, both continuous on $K$. The
+design problem is
+$$
+\min_{a \in \mathbb{R}^{L+1}}\ \delta(a), \qquad \delta(a) = \max_{\omega \in K}|E_a(\omega)|, \qquad E_a = W(D - A_a).
+$$
+(If $K$ has at least $L + 1$ points a best approximation exists: $\delta$ is a norm
+on $\mathbb{R}^{L+1}$ by @lem-haar below, and a norm of $a$ minus a constant is
+coercive, so it attains its minimum.)
+
+::: {#lem-haar}
+## A cosine polynomial has few zeros
+
+A cosine polynomial $A(\omega) = \sum_{k=0}^{L}a_k\cos k\omega$ that is not identically
+zero has at most $L$ zeros in $[0, \pi]$.
+:::
+
+::: {.proof}
+$\cos k\omega = T_k(\cos\omega)$, where the Chebyshev polynomial $T_k$ has degree $k$
+(induction with $\cos(k + 1)\omega = 2\cos\omega\cos k\omega - \cos(k - 1)\omega$). So
+$A(\omega) = p(\cos\omega)$ for a polynomial $p$ of degree at most $L$, which is not
+the zero polynomial if the $a_k$ are not all zero. It has at most $L$ roots, and
+$\omega \mapsto \cos\omega$ is a bijection from $[0, \pi]$ onto $[-1, 1]$.
+:::
+
+::: {#thm-alternation}
+## Alternation theorem
+
+Let $K \subset [0, \pi]$ be compact with at least $L + 2$ points, and let $a$ be a
+coefficient vector with $\delta(a) > 0$. Then $a$ minimises $\delta$ if and only if
+$E_a$ has an **alternation set**: points $\omega_0 < \omega_1 < \dots < \omega_{L+1}$
+in $K$ with
+$$
+E_a(\omega_i) = \sigma\,(-1)^i\,\delta(a), \qquad i = 0, \dots, L + 1, \quad \sigma \in \{+1, -1\}.
+$$
+That is, the optimal error reaches its maximum modulus at least $L + 2$ times with
+alternating signs. (If $\delta(a) = 0$, $a$ is trivially optimal.)
+:::
+
+::: {.proof}
+*Sufficiency.* Let $E_a$ have an alternation set and suppose some $a'$ has
+$\delta(a') < \delta(a)$. Since $E_a - E_{a'} = W(A_{a'} - A_a)$, at the alternation
+points $A_{a'} - A_a$ has the sign of $E_a(\omega_i)$ (because $|E_{a'}| < |E_a|$ there),
+so it alternates in sign $L + 2$ times. By the intermediate value theorem it vanishes
+at least $L + 1$ times, so it is zero by @lem-haar: $a' = a$, a contradiction.
+
+*Necessity.* Let $a$ be optimal, $\delta^* = \delta(a) > 0$, $E = E_a$, and
+$\Omega = \{\omega \in K : |E(\omega)| = \delta^*\}$, a compact set. Suppose
+the longest alternating sequence in $\Omega$ has $m \le L + 1$ points. The sets
+$\Omega_\pm = \{E = \pm\delta^*\}$ are compact and disjoint, so at positive distance;
+hence, going through $\Omega$ from left to right, it splits into finitely many
+**runs** $B_1 < B_2 < \dots < B_{m}$ of consecutive points of the same sign, with signs alternating,
+and the number of runs is the length of the longest alternating sequence. Pick
+$z_i$ with $\max B_i < z_i < \min B_{i+1}$ and set
+$$
+P(\omega) = s\prod_{i=1}^{m-1}(\cos\omega - \cos z_i),
+$$
+a cosine polynomial of degree at most $m - 1 \le L$. Since $\cos$ is strictly
+decreasing on $[0, \pi]$, $P$ changes sign at each $z_i$ and nowhere else, so it has
+constant sign on every run, alternating from run to run; choose $s = \pm1$ so that
+$P$ has the sign of $E$ on $B_1$, hence on every run. Then $EP > 0$ on $\Omega$.
+
+By continuity there is an open neighbourhood $V$ of $\Omega$ in $K$ on which
+$EP > 0$, $W|P| \ge c/2$ (with $c = \min_\Omega W|P| > 0$) and $|E| \ge \delta^*/2$. On the
+compact set $K \setminus V$, $|E| \le \delta^* - \eta$ for some $\eta > 0$. Let
+$M = \max_KW|P|$ and take $0 < \lambda < \min(\eta, \delta^*)/(2M)$. The coefficient vector
+$a'$ of $A_a + \lambda P$ has error $E' = E - \lambda WP$. On $V$, $E$ and $WP$ have
+the same sign and $\lambda W|P| \le \delta^*/2 \le |E|$, so $|E'| = |E| - \lambda W|P| \le \delta^* - \lambda c/2$.
+On $K \setminus V$, $|E'| \le \delta^* - \eta + \lambda M < \delta^* - \eta/2$. So
+$\delta(a') < \delta^*$, contradicting optimality. Hence $m \ge L + 2$.
+:::
+
+(The amplitude $A$ has $L + 1$ free coefficients, so the number of alternations
+is that number plus one.) We design a filter with
+`signal.remez`, which implements the Parks–McClellan algorithm, and check the theorem:
+the error alternates at least $L + 2 = 17$ times, and no perturbation of the
+coefficients does better, whereas a window design of the same length has a larger maximum error.
+
+```{python}
+numtaps, bands = 31, [0, 0.25, 0.30, 1.0]                  # band edges in units of pi (fs = 2)
+L = (numtaps - 1) // 2
+h = signal.remez(numtaps, bands, [1, 0], fs=2)
+a_star = np.concatenate([[h[L]], 2 * h[L + 1:]])           # a_0 = h[L], a_k = 2 h[L + k]
+
+omega = np.pi * np.concatenate([np.linspace(0, 0.25, 4000), np.linspace(0.30, 1.0, 14000)])
+desired = (omega <= 0.25 * np.pi).astype(float)
+cos_matrix = np.cos(np.outer(omega, np.arange(L + 1)))
+
+def error(a):
+    return desired - cos_matrix @ a                         # W = 1 on both bands
+
+def delta(a):
+    return np.max(np.abs(error(a)))
+
+band_slices = [slice(0, 4000), slice(4000, 18000)]         # grid points of the passband and of the stopband
+
+def alternation_points(E, tol=1e-2):
+    """Indices of an alternating sequence of extremal points: local maxima of |E| in each band
+    (band edges included) whose height is within tol of the maximum."""
+    magnitude = np.abs(E)
+    top = magnitude.max()
+    candidates = []
+    for band in band_slices:
+        m = magnitude[band]
+        local_max = np.r_[True, (m[1:-1] >= m[:-2]) & (m[1:-1] >= m[2:]), True]
+        candidates += [band.start + i for i in np.nonzero(local_max)[0] if m[i] >= (1 - tol) * top]
+    sequence = []
+    for i in candidates:
+        if not sequence or np.sign(E[i]) != np.sign(E[sequence[-1]]):
+            sequence.append(i)
+        elif magnitude[i] > magnitude[sequence[-1]]:
+            sequence[-1] = i
+    return sequence
+
+E_star = error(a_star)
+points = alternation_points(E_star)
+print(f"L = {L}: the optimal error has maximum {delta(a_star):.6f} and {len(points)} alternations (theorem: at least {L + 2})")
+assert len(points) >= L + 2
+
+rng = np.random.default_rng(1010)
+smallest_increase = min(delta(a_star + 1e-3 * rng.normal(size=L + 1)) - delta(a_star) for _ in range(300))
+print(f"smallest change of the maximum error over 300 random perturbations: {smallest_increase:+.2e} (never negative)")
+assert smallest_increase > 0
+
+h_kaiser = signal.firwin(numtaps, 0.275, window=("kaiser", 6.0), fs=2)
+a_kaiser = np.concatenate([[h_kaiser[L]], 2 * h_kaiser[L + 1:]])
+print(f"maximum error: Parks-McClellan {delta(a_star):.5f}, Kaiser window {delta(a_kaiser):.5f}")
+assert delta(a_star) < delta(a_kaiser)
+```
+
+```{python}
+#| label: fig-alternation
+#| fig-cap: "Error $E(\\omega)$ of the optimal filter of length 31 on the passband (left) and the stopband (right). The error touches $\\pm\\delta$ at least $L + 2 = 17$ times with alternating signs (dots); the dashed lines are $\\pm\\delta$."
+fig, axes = plt.subplots(1, 2, figsize=(7, 2.8), sharey=True)
+for ax, (lo, hi) in zip(axes, [(0, 0.25), (0.30, 1.0)]):
+    inside = (omega >= lo * np.pi) & (omega <= hi * np.pi)
+    ax.plot(omega[inside] / np.pi, E_star[inside], lw=0.9)
+    sel = [i for i in points if inside[i]]
+    ax.plot(omega[sel] / np.pi, E_star[sel], "o", color="C3", ms=4)
+    for sign in (+1, -1):
+        ax.axhline(sign * delta(a_star), color="0.6", ls="--", lw=0.8)
+    ax.set_xlabel(r"$\omega / \pi$")
+axes[0].set_ylabel("error")
+plt.tight_layout()
+plt.show()
+```
+
+## The mean ergodic theorem {#sec-ap-ergodic}
+
+@sec-noise computes expectations over many realisations ("ensemble averages") and
+then estimates them from a *single* long realisation ("time averages"). It says
+that this works for the processes of the book, which are "ergodic". The first and
+simplest precise statement concerns the mean. The tool is a theorem about unitary
+operators on a Hilbert space.
+
+::: {#thm-von-neumann}
+## von Neumann's mean ergodic theorem
+
+Let $U$ be a linear bijection of a Hilbert space $H$ onto itself that preserves the
+inner product, and let $P$ be the orthogonal projection onto the closed subspace
+$M = \{z : Uz = z\}$. Then for every $y \in H$,
+$$
+\frac1N\sum_{n=0}^{N-1}U^ny \;\longrightarrow\; Py \qquad (N \to \infty) \text{ in } H.
+$$
+:::
+
+::: {.proof}
+Since $U$ preserves inner products, $\langle U^{-1}z, w\rangle = \langle z, Uw\rangle$, so
+the adjoint of $U$ is $U^{-1}$. *Step 1: $M^\perp$ is the closure of the range of
+$U - I$.* If $z \perp (U - I)w$ for all $w$, then $\langle z, Uw\rangle = \langle z, w\rangle$
+for all $w$, i.e. $U^{-1}z = z$, so $z \in M$. Conversely, if $z \in M$, then
+$U^{-1}z = z$ and $\langle z, (U - I)w\rangle = \langle U^{-1}z - z, w\rangle = 0$. So
+$M = \operatorname{Ran}(U - I)^\perp$ and $M^\perp = \overline{\operatorname{Ran}(U - I)}$.
+
+*Step 2.* Let $A_N = \frac1N\sum_{n<N}U^n$, with $\|A_N\| \le 1$. If $y \in M$,
+$A_Ny = y$. If $y = Uz - z$, the sum telescopes: $A_Ny = (U^Nz - z)/N$ and
+$\|A_Ny\| \le 2\|z\|/N \to 0$. If $y \in M^\perp$, take $w \in \operatorname{Ran}(U - I)$ with
+$\|y - w\| < \varepsilon$: $\|A_Ny\| \le \|A_N(y - w)\| + \|A_Nw\| < \varepsilon + o(1)$,
+so $A_Ny \to 0$. Writing a general $y = Py + (y - Py)$ gives $A_Ny \to Py$.
+:::
+
+To use it, let $x[n]$ be a WSS process of the chapter, with mean $m$ and covariance
+$c[k] = r_x[k] - m^2$, and let $y[n] = x[n] - m$. The random variables with finite second
+moment form a Hilbert space with $\langle u, v\rangle = \mathbb{E}[u\bar v]$ (L1), and
+$\langle y[n + k], y[l + k]\rangle = c[n - l]$ does not depend on $k$. So the shift
+$Uy[n] = y[n + 1]$, extended linearly and by continuity to the closed span $H$ of all
+the $y[n]$, preserves inner products; it is onto $H$ because $y[n] = Uy[n - 1]$. Then
+$\frac1N\sum_{n<N}U^ny[0]$ is the time average of the centred process.
+
+::: {#thm-mean-ergodic}
+## Mean ergodic theorem for WSS processes
+
+Let $x$ be a WSS process with mean $m$ and covariance $c[k]$, and
+$\bar x_N = \frac1N\sum_{n=0}^{N-1}x[n]$. Then
+
+a. $v_N = \mathbb{E}|\bar x_N - m|^2 = \dfrac1N\displaystyle\sum_{|k| < N}\Big(1 - \dfrac{|k|}N\Big)c[k]$.
+b. $\bar x_N$ converges in mean square to a random variable $\bar x$ with
+   $\mathbb{E}\bar x = m$, and $v_N \to v = \mathbb{E}|\bar x - m|^2$.
+c. Hence $\bar x_N \to m$ in mean square if and only if $v_N \to 0$. This holds whenever
+   $c[k] \to 0$, in particular when $c$ is absolutely summable, since then
+   $v_N \le \frac1N\sum_{|k|<N}|c[k]| \to 0$.
+:::
+
+::: {.proof}
+(a) $\mathbb{E}|\bar x_N - m|^2 = \frac1{N^2}\sum_{n,l<N}c[n - l]$, and the difference
+$n - l = k$ occurs $N - |k|$ times. (b) By @thm-von-neumann with $y = y[0]$, the
+averages $\bar y_N = \bar x_N - m$ converge in $H$ to $Py[0]$, so
+$\mathbb{E}|\bar y_N|^2 \to \|Py[0]\|^2$ and $\mathbb{E}\bar y_N = 0$ passes to the limit
+(the expectation is an inner product with the constant 1). (c) If $v = 0$, the limit
+is the zero element. If $c[k] \to 0$, the averages of $|c[k]|$ over $|k| < N$ tend
+to 0 (Cesàro: a sequence that tends to 0 has averages that tend to 0).
+:::
+
+The condition cannot be dropped. If $x[n] = A$ for all $n$, with $A$ a random variable
+of variance $\sigma_A^2 > 0$, then $c[k] = \sigma_A^2$, $v_N = \sigma_A^2$ for every $N$, and
+the time average is $A$, not the mean: a single realisation never reveals the ensemble
+mean. (This is Exercise 7 of @sec-noise.) We compare both cases with a simulation: an
+AR(1) process $x[n] = 0.9\,x[n - 1] + w[n]$, with $c[k] = \sigma_x^2\,0.9^{|k|}$, and
+the constant process.
+
+```{python}
+rho, sigma_w = 0.9, 1.0
+var_x = sigma_w ** 2 / (1 - rho ** 2)
+
+def v_exact(N):
+    k = np.arange(-(N - 1), N)
+    return np.sum((1 - np.abs(k) / N) * var_x * rho ** np.abs(k)) / N
+
+R, burn_in, lengths = 1000, 500, [10, 30, 100, 300, 1000]
+rng = np.random.default_rng(1111)
+w = rng.normal(scale=sigma_w, size=(R, burn_in + max(lengths)))
+paths = signal.lfilter([1.0], [1.0, -rho], w, axis=1)[:, burn_in:]          # R realisations, mean 0
+running_mean = np.cumsum(paths, axis=1) / np.arange(1, paths.shape[1] + 1)
+A = rng.normal(size=R)                                                       # the constant process: x[n] = A
+
+print("     N   v_N exact   simulated    N * v_N   constant process (v_N = 1)")
+v_mc, v_const = [], []
+for N in lengths:
+    mc = np.mean(running_mean[:, N - 1] ** 2)
+    v_mc.append(mc)
+    v_const.append(np.mean(A ** 2))
+    print(f"{N:6d}   {v_exact(N):.5f}    {mc:.5f}    {N * v_exact(N):7.2f}   {v_const[-1]:.3f}")
+    assert abs(mc / v_exact(N) - 1) < 0.25                  # about 5 standard errors of the simulation
+assert abs(1000 * v_exact(1000) / (sigma_w ** 2 / (1 - rho) ** 2) - 1) < 0.02   # v_N ~ sigma_w^2 / ((1 - rho)^2 N)
+assert all(abs(v - 1) < 0.25 for v in v_const)
+```
+
+```{python}
+#| label: fig-mean-ergodic
+#| fig-cap: "Mean-square error $v_N$ of the time average, as a function of the number of samples $N$, for an AR(1) process with $\\rho = 0.9$ (exact line, simulation dots) and for the constant process $x[n] = A$. The first decays like $1/N$; the second does not decay: the time average of one realisation is $A$, not the mean."
+Ns = np.unique(np.round(np.logspace(0, 3, 40)).astype(int))
+fig, ax = plt.subplots()
+ax.loglog(Ns, [v_exact(N) for N in Ns], label="AR(1), exact")
+ax.loglog(lengths, v_mc, "o", color="C3", ms=4, label="AR(1), simulation")
+ax.loglog(Ns, np.ones_like(Ns, dtype=float), "--", color="0.4", label="constant process")
+ax.set_xlabel("N"); ax.set_ylabel(r"$v_N$"); ax.legend(fontsize=8)
+plt.show()
+```
