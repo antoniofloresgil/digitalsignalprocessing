@@ -1,0 +1,1899 @@
+# Project: A Software-Defined Radio Receiver {#sec-sdr}
+
+This is the last project of the book and the largest. After the modem
+(@sec-modem) and the pedalboard (@sec-pedalboard), it tells the story of a whole radio
+receiver, from the antenna to the loudspeaker, and builds everything that *can* be built
+in software. It uses the whole book, and it explains from the beginning the things
+that the other chapters did not need: why a signal is sent on a carrier, how
+information is written on it, and what a broadcast station actually transmits.
+Like the rest of the book it is executable: the "radio signal" that we receive is
+created by the code of the chapter, and every claim is checked on it.
+
+By the end you should be able to:
+
+- say what a software-defined radio is, what it gains over a traditional receiver,
+  and which parts of a radio are still analog;
+- explain why information travels on a carrier, and how amplitude and frequency
+  modulation write a message on it;
+- describe the signal of a stereo FM broadcast station, from the audio to the
+  composite signal that modulates the carrier;
+- represent a radio signal by its complex envelope, the in-phase and quadrature
+  samples that an SDR delivers, and explain why this needs about a hundred times
+  fewer samples than sampling the radio-frequency signal itself;
+- generate a synthetic "capture" of the FM band, as a software-defined radio would
+  record it.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Setup: imports, constants and the audio players of the HTML edition"
+import io, base64, wave
+from fractions import Fraction
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+from scipy import signal, special
+
+rng = np.random.default_rng(88)
+plt.rcParams["figure.figsize"] = (7, 3)
+plt.rcParams["axes.grid"] = True
+plt.rcParams["grid.alpha"] = 0.3
+
+def wav_base64(x, rate):
+    """16-bit WAV file (mono, or stereo if x has two columns) as a base64 string."""
+    x = np.asarray(x)
+    pcm = np.round(np.clip(x, -1, 1) * 32767).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1 if x.ndim == 1 else x.shape[1]); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+    return base64.b64encode(buf.getvalue()).decode()
+
+class Clips:
+    """Labelled audio players, shown in the HTML edition (the same trick as the GIF animations)."""
+    def __init__(self, clips, rate):
+        self.html = "".join(
+            f'<div style="margin:0.4em 0"><div style="font-size:0.9em">{label}</div>'
+            f'<audio controls preload="none" src="data:audio/wav;base64,{wav_base64(x, rate)}"></audio></div>'
+            for label, x in clips.items())
+
+    def _repr_html_(self):
+        return self.html
+
+def welch_psd(x, rate, nperseg=4096):
+    """Welch estimate of the power spectral density (Hann window, 50 % overlap), in units^2 per Hz.
+
+    A complex signal gives a two-sided result with the frequencies centred on zero; a real one, a
+    one-sided result. (scipy.signal.welch fails on signals of more than about 10^5 samples in the
+    browser, where array sizes are 32-bit, so we write it: it is a loop over the segments.)"""
+    w = np.hanning(nperseg)
+    hop = nperseg // 2
+    n_seg = (len(x) - nperseg) // hop + 1
+    if np.iscomplexobj(x):
+        acc = sum(np.abs(np.fft.fft(x[k * hop:k * hop + nperseg] * w)) ** 2 for k in range(n_seg))
+        f, P = np.fft.fftfreq(nperseg, 1 / rate), acc / (n_seg * rate * np.sum(w ** 2))
+        order = np.argsort(f)
+        return f[order], P[order]
+    acc = sum(np.abs(np.fft.rfft(x[k * hop:k * hop + nperseg] * w)) ** 2 for k in range(n_seg))
+    P = acc / (n_seg * rate * np.sum(w ** 2))
+    P[1:-1] *= 2                                               # one-sided: fold the negative frequencies in
+    return np.fft.rfftfreq(nperseg, 1 / rate), P
+
+def psd_db(x, rate, nperseg=4096):
+    """Power spectral density of a (complex) signal in dB, with the frequencies centred on zero."""
+    f, P = welch_psd(x, rate, nperseg)
+    return f, 10 * np.log10(P + 1e-30)
+
+# Our estimator agrees with SciPy's on a signal that SciPy can handle.
+x_chk = rng.normal(size=20_000) + 1j * rng.normal(size=20_000)
+f_ours, P_ours = welch_psd(x_chk, 1000.0, 512)
+f_sp, P_sp = signal.welch(x_chk, 1000.0, window=np.hanning(512), nperseg=512, detrend=False, return_onesided=False)
+assert np.allclose(P_ours, P_sp[np.argsort(f_sp)], rtol=1e-6)
+```
+
+## Why a radio is moving into the computer {#sec-sdr-trend}
+
+Almost everything that processes signals has been moving from analog to digital
+for sixty years. Telephone exchanges stopped switching voltages and began
+switching numbers; the long-playing record gave way to the compact disc; film
+cameras to sensors with converters; analog television to digital broadcasting;
+the telephone in the pocket is, for the most part, a signal processor that also
+has a radio attached to it. The reason is always the same, and it is the reason
+why the first thirteen chapters of this book exist. Once a signal is a sequence
+of numbers, processing it is a program, and a program has properties that a
+circuit does not:
+
+- **Repeatability.** Two analog filters built with the same design differ,
+  because resistors and capacitors have tolerances, and each one drifts with
+  temperature and age. A digital filter is a list of coefficients, and every copy
+  is the same, today and in ten years.
+- **Flexibility.** Changing the behaviour of a circuit means soldering. Changing
+  a program means editing it, even after the product has been sold.
+- **Functions that circuits cannot give.** Exactly linear-phase filters
+  (@sec-filter-design), delays of fractions of a sample (@sec-sampling), adaptive
+  filters that learn their coefficients, the FFT of the last second, an
+  automatic gain that looks into the future: all are natural in a program and
+  impossible or very costly in analog hardware.
+- **No accumulation of noise.** An analog signal that is amplified, filtered,
+  recorded and copied picks up noise at every step. A digital signal is copied
+  without losing a bit, and noise enters only where the world is converted into
+  numbers.
+- **Cost that follows the chips.** Processors and converters become cheaper and
+  faster every year; capacitors and coils do not become smaller.
+- **Testing and simulation.** A system that is software can be simulated, tested
+  with a million cases, versioned and shared. This chapter is an example: it
+  contains a complete radio that nobody has to build.
+
+Two of these claims can be shown in a few lines.
+
+```{python}
+# (1) Repeatability: the cut-off of an RC low-pass is 1/(2 pi R C); with parts of 5 % tolerance
+#     every copy of the "same" filter is different. A digital filter has no tolerance.
+n_copies = 10_000
+R = 10e3 * rng.uniform(0.95, 1.05, n_copies)               # 10 kOhm, +-5 %
+C = 1e-9 * rng.uniform(0.95, 1.05, n_copies)               # 1 nF, +-5 %
+fc = 1 / (2 * np.pi * R * C)
+nominal = 1 / (2 * np.pi * 10e3 * 1e-9)
+spread = (fc.max() - fc.min()) / nominal
+print(f"analog RC filter, nominal cut-off {nominal / 1e3:.2f} kHz: copies range over {100 * spread:.1f} % of it")
+assert spread > 0.15                                        # parts of 5 % give copies that differ by 15 % or more
+
+# (2) Noise accumulation: copy a signal through N analog stages, each adding noise 60 dB below it.
+x = np.sin(2 * np.pi * 440 * np.arange(48_000) / 48_000)
+analog = x.copy()
+for stage in range(1, 11):
+    analog = analog + rng.normal(0, np.sqrt(np.mean(x ** 2)) * 10 ** (-60 / 20), len(x))
+    if stage in (1, 10):
+        snr = 10 * np.log10(np.sum(x ** 2) / np.sum((analog - x) ** 2))
+        print(f"after {stage:2d} analog copies: SNR {snr:.1f} dB")
+digital = x.astype(np.float32).copy()
+for stage in range(10):
+    digital = digital.copy()                                # a bit-exact copy, ten times
+print(f"after 10 digital copies: identical = {np.array_equal(digital, x.astype(np.float32))}")
+assert np.array_equal(digital, x.astype(np.float32))
+assert 49 < snr < 51                                        # 60 dB - 10 log10(10) = 50 dB
+```
+
+The costs are the converters and the power they need: a converter has a limited
+number of bits (@sec-quantization) and a limited rate, and the faster and
+more precise it is, the more energy it uses. The history of radio receivers is
+the story of the converter moving *towards the antenna*, as far as these limits
+allow:
+
+| Era | What is digital | What is still analog |
+|---|---|---|
+| Valve and transistor radios | nothing | everything |
+| Radios with digital tuning | the display and the tuning logic | the signal path |
+| Digital audio processing in the receiver | tone control, equalisation, decoding of the stereo signal | the radio-frequency part and the demodulation |
+| Mobile phones | everything after the first conversion to a low frequency (the *baseband*) | the antenna, amplifier and first mixer |
+| Software-defined radio | everything after a converter that samples a band of the spectrum | the antenna, the amplifier, the tuner and the converter |
+
+This chapter lives in the last row.
+
+## What is a software-defined radio {#sec-sdr-what}
+
+A **software-defined radio** (SDR) is a radio in which the functions that decide
+what the radio *is*, such as selecting a channel, demodulating, decoding, are
+carried out by a programmable processor and not by fixed hardware
+[@mitola1995; @reed2002; @collins2018]. The same device can then be a broadcast
+receiver, an aircraft tracker or the radio of a weather satellite, changing only
+the program. @fig-sdr-chains compares a traditional receiver with an SDR.
+
+```{python}
+#| label: fig-sdr-chains
+#| fig-cap: "A traditional superheterodyne receiver (top) and a software-defined radio (bottom). Orange blocks are analog hardware, blue blocks are computation. In the SDR the analog part ends in the converter, and everything the radio does (choosing the channel, demodulating, processing the audio) is a program."
+def draw_chain(ax, blocks, y):
+    """Draw a row of boxes joined by arrows; each block is (label, 'analog' or 'digital')."""
+    x, w, gap = 0.0, 1.0, 0.32
+    colours = {"analog": "#f4c27a", "digital": "#9ec5e8"}
+    for i, (label, kind) in enumerate(blocks):
+        ax.add_patch(FancyBboxPatch((x, y - 0.32), w, 0.64, boxstyle="round,pad=0.02,rounding_size=0.08",
+                                    fc=colours[kind], ec="0.25", lw=0.8))
+        ax.text(x + w / 2, y, label, ha="center", va="center", fontsize=6.4)
+        if i:
+            ax.add_patch(FancyArrowPatch((x - gap, y), (x, y), arrowstyle="-|>", mutation_scale=7, lw=0.8, color="0.25"))
+        x += w + gap
+    return x - gap
+
+traditional = [("antenna", "analog"), ("RF filter\n+ amplifier", "analog"), ("mixer\n(oscillator)", "analog"),
+               ("IF filter", "analog"), ("analog\ndemodulator", "analog"), ("audio\namplifier", "analog"),
+               ("loud-\nspeaker", "analog")]
+software = [("antenna", "analog"), ("RF filter\n+ amplifier", "analog"), ("mixer\n(oscillator)", "analog"),
+            ("anti-alias\nfilter", "analog"), ("ADC", "analog"), ("channel filter\n+ decimation", "digital"),
+            ("demodulation\n+ stereo", "digital"), ("audio\nprocessing", "digital"), ("DAC +\nspeaker", "analog")]
+fig, ax = plt.subplots(figsize=(7.4, 2.5))
+width = max(draw_chain(ax, traditional, 1.5), draw_chain(ax, software, 0.35))
+ax.set(xlim=(-0.1, width + 0.1), ylim=(-0.1, 2.0))
+ax.axis("off")
+ax.text(-0.05, 1.95, "traditional receiver", fontsize=8, weight="bold", va="top")
+ax.text(-0.05, 0.8, "software-defined radio", fontsize=8, weight="bold", va="top")
+plt.tight_layout()
+plt.show()
+```
+
+The figure shows what is left of the analog world. Five things cannot be
+replaced by a program, at least not yet:
+
+| Block | What it does | Why it is still analog |
+|---|---|---|
+| Antenna | converts the electromagnetic wave into a voltage | it is a piece of metal whose size is tied to the wavelength |
+| RF filter | removes strong signals far from the band of interest | a strong station nearby would saturate the converter |
+| Low-noise amplifier | makes the antenna signal larger than the noise of what follows | the receiver's noise is fixed by its first stage |
+| Mixer and oscillator | move the band of interest to a low frequency | no converter is fast enough to sample 100 MHz carriers *and* precise enough |
+| Converter (ADC) | turns the voltage into numbers | it is the border, the place where the analog world ends |
+
+Why the mixer? A radio signal is a narrow band of frequencies around a high
+carrier. FM broadcasting uses carriers between 88 and 108 MHz. We could try to
+sample the antenna voltage directly, but the sampling theorem (@sec-sampling) asks
+for more than twice the highest frequency, so more than 216 million samples per
+second, with a converter whose analog input must also be precise at 108 MHz. It is
+possible, with expensive converters and a lot of power. The usual solution is
+cheaper: the mixer moves the band that interests us to be centred on zero
+frequency, and then the converter needs to cover only the *width* of the band.
+We make the comparison for a typical USB receiver, which samples 0.96 million
+complex samples per second (we use this number for the whole chapter):
+
+```{python}
+f_max = 108e6                                              # top of the FM band, Hz
+direct_rate = 2 * f_max                                    # real samples per second to sample the RF itself
+iq_rate = 0.96e6                                           # complex samples per second after the mixer
+print(f"sampling the radio frequency: {direct_rate / 1e6:.0f} million real samples per second")
+print(f"I/Q after the mixer: {iq_rate / 1e6:.2f} million complex = {2 * iq_rate / 1e6:.2f} million real samples per second")
+print(f"ratio: {direct_rate / (2 * iq_rate):.0f} times fewer")
+assert direct_rate / (2 * iq_rate) > 100
+```
+
+It is a hundred times fewer samples. The price is that what the converter
+delivers is not an ordinary signal but a *pair* of signals, called I and Q, which
+we define in @sec-sdr-iq. This was the trick that made SDRs cheap: in the early
+2010s it was discovered that some inexpensive USB receivers for digital
+television could deliver these raw samples to a computer, and with them a
+generation of students and amateurs began to receive aircraft, satellites and
+radio stations with a program.
+
+## The project {#sec-sdr-project}
+
+We build a **receiver for FM stereo broadcasting**, the music and talk stations
+of 88–108 MHz. It is a good project for three reasons: everybody knows what the
+result must sound like; the signal is rich, with a carrier, a modulation,
+a stereo multiplex and an emphasis curve, so that nearly all of the book is used;
+and the whole receiver is within the reach of a program.
+
+There is no antenna in a book. What we do instead is to *build the signal that
+a software-defined radio delivers*: an array of complex numbers, sampled at
+0.96 MHz, that contains four stations, noise, a small frequency error of the tuner
+and the roughness of an 8-bit converter. We build it with the same kind of
+formulas that a real station uses, so that the receiver cannot tell the difference.
+In fact the capture is stored in the *format* of a real dongle (interleaved
+unsigned bytes), and the receiver reads it as it would read a file recorded
+from an antenna: replacing one by the other is Exercise 8.
+
+The plan of the project is the following.
+
+| Stage | What we do | Tools of the book |
+|---|---|---|
+| **1. The antenna** | Synthesise the capture: four stations, noise, tuner error, 8-bit converter | modulation, noise, quantisation |
+| 2. Spectrum | Look at the band, find the stations, measure the tuner error | DFT, windows, PSD |
+| 3. Tuning | Move the chosen station to zero frequency | complex exponentials |
+| 4. Channel selection | Filter out the neighbours and reduce the rate | FIR design, multirate |
+| 5. Demodulation | Recover the composite signal from the phase | instantaneous frequency |
+| 6. Stereo decoding | Find the pilot, regenerate the subcarrier, separate L and R | filters, phase-locked loop |
+| 7. Audio | De-emphasis and resampling to 48 kHz | IIR filters, multirate |
+| 8. Measurements | Selectivity, SNR against signal strength, the FM threshold | noise, estimation |
+| 9. Real data | Run the receiver on a recording from a real dongle | everything |
+
+Before building the antenna signal we need to understand what a station puts on
+it. That is the subject of the next two sections.
+
+## How information travels by radio {#sec-sdr-modulation}
+
+### Why a carrier
+
+A voice has frequencies between 100 Hz and a few kHz. We could think of sending
+it directly, as a signal that varies at those frequencies. Two things prevent it.
+
+The first is the **antenna**. An antenna radiates efficiently when its length is
+a sizable fraction of the wavelength $\lambda = c/f$ (a quarter of it for a simple
+whip), where $c \approx 3\times10^8$ m/s is the speed of light.
+
+```{python}
+c_light = 299_792_458.0
+for name, f in (("a voice, 1 kHz", 1e3), ("AM broadcasting, 1 MHz", 1e6), ("FM broadcasting, 100 MHz", 100e6),
+                ("a mobile phone, 2 GHz", 2e9)):
+    lam = c_light / f
+    print(f"{name:26s} wavelength {lam:12.2f} m, quarter-wave antenna {lam / 4:10.3f} m")
+assert abs(c_light / 100e6 / 4 - 0.75) < 0.01               # a 75 cm whip for the FM band
+```
+
+An antenna for a 1 kHz signal would be 75 kilometres long. At 100 MHz it is a
+whip of 75 cm. Raising the frequency of the signal solves the antenna.
+
+The second is **sharing**. If every station radiated its voice directly, they
+would all occupy the same frequencies and hear each other. By shifting each message
+to a different place of the spectrum, a different **carrier frequency**, many
+stations can transmit at once through the same air and a receiver can pick one by
+tuning. This is **frequency-division multiplexing**, the same idea as the one of
+the telephone line of @sec-modem, now with the sky as the channel.
+
+A **carrier** is a sinusoid $A\cos(2\pi f_ct)$ with the frequency $f_c$ chosen for
+the station, and **modulation** is the act of changing one of its three
+parameters (amplitude, frequency or phase) according to the message $m(t)$, the
+signal that we want to send. Only the changes carry information; an unmodulated
+carrier says only that a station exists.
+
+### Amplitude modulation and frequency modulation
+
+The simplest way to write a message on a carrier is to vary its **amplitude**:
+$$
+s_{\mathrm{AM}}(t) = \big(1 + \mu\,m(t)\big)\cos(2\pi f_ct),
+\qquad |m(t)| \le 1,\ 0 < \mu \le 1.
+$$
+This is **amplitude modulation** (AM), used in medium-wave broadcasting. The
+envelope of the carrier is the message. The alternative is to vary the
+**frequency**. In **frequency modulation** (FM) the amplitude is constant and the
+*instantaneous frequency* follows the message:
+$$
+s_{\mathrm{FM}}(t) = A\cos\big(\varphi(t)\big),
+\qquad
+\varphi(t) = 2\pi f_ct + 2\pi k_f\int_{-\infty}^{t}m(\tau)\,d\tau .
+$$
+The instantaneous frequency is the derivative of the phase divided by $2\pi$,
+$f_i(t) = \frac{1}{2\pi}\varphi'(t) = f_c + k_f\,m(t)$: it moves around $f_c$ by an
+amount proportional to the message. The constant $k_f$ (in Hz per unit of $m$) is
+the **sensitivity**, and the largest excursion $\Delta f = k_f\max|m|$ is the
+**frequency deviation**. A broadcast station uses $\Delta f = 75$ kHz.
+
+@fig-am-fm shows the same message, a 500 Hz tone, on both. We use a carrier of
+8 kHz and a sampling rate of 64 kHz, a scaled-down version of the 100 MHz of the
+real band so that we can see the details (the ideas do not depend on the scale).
+
+```{python}
+#| label: fig-am-fm
+#| fig-cap: "A 500 Hz tone modulated on a carrier of 8 kHz, in amplitude (left) and in frequency with a deviation of 2 kHz (right). Top: waveforms; the AM envelope follows the message while the FM envelope is constant and the waves crowd and spread. Bottom: spectra in dB; AM has a carrier and two sidelines, FM has many lines around the carrier."
+fs_demo, fc_demo, fm_demo = 64_000, 8_000, 500
+t = np.arange(fs_demo) / fs_demo                             # one second
+message = np.cos(2 * np.pi * fm_demo * t)
+am = (1 + 0.8 * message) * np.cos(2 * np.pi * fc_demo * t)
+kf_demo = 2_000                                              # deviation 2 kHz
+phase = 2 * np.pi * fc_demo * t + 2 * np.pi * kf_demo * np.cumsum(message) / fs_demo
+fm = np.cos(phase)
+
+fig, axes = plt.subplots(2, 2, figsize=(7.4, 4.2))
+for col, (x, name) in enumerate(((am, "AM"), (fm, "FM"))):
+    axes[0, col].plot(t[:256] * 1e3, x[:256], lw=0.8)
+    axes[0, col].plot(t[:256] * 1e3, 1 + 0.8 * message[:256] if name == "AM" else np.ones(256), "--", color="C3", lw=0.7)
+    axes[0, col].set(title=name, xlabel="time [ms]")
+    X = 20 * np.log10(np.abs(np.fft.rfft(x * np.hanning(len(x)))) / len(x) * 4 + 1e-6)
+    axes[1, col].plot(np.fft.rfftfreq(len(x), 1 / fs_demo) / 1e3, X, lw=0.7)
+    axes[1, col].set(xlim=(0, 16), ylim=(-100, 5), xlabel="frequency [kHz]", ylabel="dB")
+plt.tight_layout()
+plt.show()
+
+# AM with a tone has exactly three lines: the carrier and two sidelines of relative amplitude mu/2.
+X = np.abs(np.fft.rfft(am)) / (len(am) / 2)
+k_c = fc_demo * len(am) // fs_demo
+lines = X[[k_c - fm_demo, k_c, k_c + fm_demo]]
+print("AM lines (carrier - fm, carrier, carrier + fm):", np.round(lines, 4))
+assert np.allclose(lines, [0.4, 1.0, 0.4], atol=1e-6)         # mu = 0.8: sidelines of mu/2
+assert np.max(X[(np.arange(len(X)) < k_c - fm_demo - 1) | (np.arange(len(X)) > k_c + fm_demo + 1)]) < 1e-9
+```
+
+The AM spectrum has three lines: the carrier, and two *sidelines* at
+$f_c \pm f_m$ (the message shifted up and down), each of amplitude $\mu/2$ of the
+carrier. It is simple and costs little, but noise from lightning, motors and
+electronic equipment adds to the *amplitude* of the signal and is demodulated with
+it. FM is much more robust, because the receiver can ignore the amplitude
+completely and look only at the frequency: at the cost of using more spectrum,
+as we are going to measure.
+
+### The spectrum of FM
+
+FM is not linear in the message: the spectrum of an FM signal is not the spectrum
+of the message shifted. But for a pure tone it is a classic, and exact.
+
+::: {#prp-fm-tone}
+## FM with a tone
+
+Let $A > 0$, $f_c > 0$, $f_m > 0$, $\beta \ge 0$ and
+$s(t) = A\cos\big(2\pi f_ct + \beta\sin(2\pi f_mt)\big)$, the FM signal of the
+message $m(t) = \cos(2\pi f_mt - \pi/2)$ with modulation index
+$\beta = \Delta f/f_m$. Then
+$$
+\begin{aligned}
+s(t) &= A\sum_{n=-\infty}^{\infty}J_n(\beta)\cos\big(2\pi(f_c + nf_m)t\big),\\
+J_n(\beta) &= \frac{1}{2\pi}\int_{-\pi}^{\pi}\cos(n\theta - \beta\sin\theta)\,d\theta,
+\end{aligned}
+$$
+where $J_n$ is the **Bessel function** of the first kind of order $n$. They
+satisfy $J_{-n} = (-1)^nJ_n$ and $\sum_nJ_n(\beta)^2 = 1$.
+:::
+
+::: {.proof}
+The function $\theta \mapsto e^{j\beta\sin\theta}$ is smooth and $2\pi$-periodic,
+so it is the sum of its Fourier series (@sec-advanced-proofs),
+$e^{j\beta\sin\theta} = \sum_nc_ne^{jn\theta}$ with
+$c_n = \frac{1}{2\pi}\int_{-\pi}^{\pi}e^{j(\beta\sin\theta - n\theta)}d\theta$. The
+imaginary part of the integrand, $\sin(\beta\sin\theta - n\theta)$, is odd in
+$\theta$, so $c_n$ is real and equal to $J_n(\beta)$. Put
+$\theta = 2\pi f_mt$ and take the real part of $Ae^{j2\pi f_ct}e^{j\beta\sin\theta}$:
+the formula follows, because the $J_n$ are real.
+
+For the symmetry, replace $\theta$ by $\theta + \pi$ in the integral of $J_{-n}$:
+$\sin(\theta + \pi) = -\sin\theta$ and the cosine acquires the factor $(-1)^n$.
+Finally $|e^{j\beta\sin\theta}| = 1$, and Parseval's identity for the Fourier
+series gives $\sum_nc_n^2 = \frac{1}{2\pi}\int 1\,d\theta = 1$.
+:::
+
+So an FM tone has *infinitely many* lines, spaced by $f_m$ around the carrier,
+with amplitudes $|J_n(\beta)|$; the power is shared among them, and, since
+$\sum J_n^2 = 1$, it does not depend on $\beta$: *the modulation moves power from
+the carrier to the sidelines, it does not create it*. How many lines matter? The
+Bessel functions decay quickly for $|n|$ larger than $\beta$, and a classic rule of
+thumb, **Carson's rule** [@carson1922], says that nearly all of the power is within
+the band of width
+$$
+B_{\mathrm{Carson}} = 2(\Delta f + f_m) = 2f_m(\beta + 1),
+$$
+that is, in the lines with $|n| \le \beta + 1$. It is a rule, not a theorem, so we
+test it: we check the proposition on the complex signal $e^{j\beta\sin\theta}$,
+whose lines are exactly the $J_n$ (the real signal has half of each at $\pm f_c$),
+and compute the power inside the Carson band.
+
+```{python}
+#| label: fig-fm-spectrum
+#| fig-cap: "Lines of the spectrum of an FM tone for three modulation indices, as measured on the signal (dots) and given by the Bessel functions $J_n(\\beta)$ (crosses). The shaded band is Carson's: $|n| \\le \\beta + 1$. A larger index spreads the power over more lines."
+fs_t, f_m_t, N_t = 48_000, 1_000, 48_000                       # one second: 1000 whole periods
+tt = np.arange(N_t) / fs_t
+fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.6), sharey=True)
+for ax, beta in zip(axes, (0.5, 2.0, 5.0)):
+    z = np.exp(1j * beta * np.sin(2 * np.pi * f_m_t * tt))      # complex envelope of the FM tone
+    Z = np.fft.fft(z) / N_t
+    n = np.arange(-12, 13)
+    measured = np.abs(Z[(n * f_m_t * N_t // fs_t) % N_t])
+    assert np.allclose(measured, np.abs(special.jv(n, beta)), atol=1e-12)          # @prp-fm-tone
+    assert abs(np.sum(np.abs(Z) ** 2) - 1) < 1e-12                                 # sum of J_n^2 is 1
+    inside = np.abs(n) <= beta + 1
+    carson_power = np.sum(special.jv(n[inside], beta) ** 2)
+    print(f"beta = {beta}: lines with |n| <= {int(beta + 1)} carry {100 * carson_power:.2f} % of the power")
+    assert carson_power > 0.98
+    ax.axvspan(-beta - 1.5, beta + 1.5, color="C1", alpha=0.15)
+    ax.plot(n, measured, "o", ms=4)
+    ax.plot(n, np.abs(special.jv(n, beta)), "x", ms=6, color="C3")
+    ax.set(title=f"$\\beta$ = {beta}", xlabel="line number $n$")
+axes[0].set_ylabel("amplitude relative to the carrier")
+plt.tight_layout()
+plt.show()
+```
+
+In every case the Carson band contains more than 98 % of the power. For a music
+station, the message is not a tone but a signal of up to $W = 15$ kHz; the same
+rule, with the deviation of 75 kHz, gives
+$B = 2(75 + 15) = 180$ kHz. This is why stations are spaced by 200 kHz in the
+band: a channel is 200 kHz wide, about as much as the signal needs.
+
+### The complex envelope: I and Q {#sec-sdr-iq}
+
+A radio signal is real and has a high frequency, but its information is in a
+narrow band around the carrier. The tool that separates the two is the **complex
+envelope**. Any real signal of the form
+$$
+s(t) = I(t)\cos(2\pi f_ct) - Q(t)\sin(2\pi f_ct)
+$$
+with $I$ and $Q$ real signals of bandwidth $W < f_c$, can be written
+$s(t) = \operatorname{Re}\{z(t)\,e^{j2\pi f_ct}\}$ with $z(t) = I(t) + jQ(t)$, the
+complex envelope (@sec-complex-numbers). $I$ is called the **in-phase** and $Q$
+the **quadrature** component. For FM, $z(t) = A\,e^{j2\pi k_f\int m}$: a
+complex number of constant modulus whose angle carries the message. The receiver
+recovers $z$ with the circuit of @fig-sdr-chains: the mixer.
+
+::: {#prp-quadrature-mixer}
+## The quadrature mixer
+
+Let $s(t) = I(t)\cos(2\pi f_ct) - Q(t)\sin(2\pi f_ct)$ with $I$ and $Q$ real and
+with spectra contained in $|f| < W$, $W < f_c$. Then
+$$
+\begin{aligned}
+2s(t)\cos(2\pi f_ct) &= I(t) + I(t)\cos(4\pi f_ct) - Q(t)\sin(4\pi f_ct),\\
+-2s(t)\sin(2\pi f_ct) &= Q(t) - I(t)\sin(4\pi f_ct) - Q(t)\cos(4\pi f_ct),
+\end{aligned}
+$$
+and the terms at $2f_c$ have their spectra in $2f_c - W < |f| < 2f_c + W$. A
+low-pass filter with cut-off between $W$ and $2f_c - W$ therefore recovers $I$ and
+$Q$ exactly, that is, $z = \mathrm{LP}\{2s(t)e^{-j2\pi f_ct}\}$.
+:::
+
+::: {.proof}
+The identities are the product formulas $2\cos^2a = 1 + \cos 2a$,
+$2\sin a\cos a = \sin 2a$ and $2\sin^2a = 1 - \cos 2a$. Multiplying a signal by
+$\cos(4\pi f_ct)$ or $\sin(4\pi f_ct)$ shifts its spectrum up and down by $2f_c$
+(@sec-sampling), so the spectra of the extra terms are the bands
+$[-W, W] \pm 2f_c$. If $2f_c - W > W$, the band of the wanted terms and those of
+the unwanted do not overlap, and an ideal filter separates them. Adding the first
+line to $j$ times the second gives $2se^{-j2\pi f_ct}$.
+:::
+
+In a radio, the mixer does this in analog circuits and the converter samples $I$
+and $Q$. We check the proposition with a scaled-down radio (carrier of 100 kHz,
+sampling rate of 800 kHz): an FM signal is built from its complex envelope, mixed
+down with a cosine and a sine, filtered, and compared with the original
+envelope.
+
+```{python}
+fs_r, fc_r = 800_000, 100_000
+n_r = np.arange(int(0.05 * fs_r))
+t_r = n_r / fs_r
+msg = np.sin(2 * np.pi * 1_000 * t_r) + 0.5 * np.sin(2 * np.pi * 2_300 * t_r)      # a two-tone message
+z_true = np.exp(1j * 2 * np.pi * 20_000 * np.cumsum(msg) / fs_r)                    # FM, k_f = 20 kHz
+s_rf = np.real(z_true * np.exp(2j * np.pi * fc_r * t_r))                            # the radio-frequency signal
+lowpass = signal.firwin(255, 60_000, fs=fs_r)                                       # cut-off between W and 2 f_c - W
+I = np.convolve(2 * s_rf * np.cos(2 * np.pi * fc_r * t_r), lowpass, mode="same")
+Q = np.convolve(-2 * s_rf * np.sin(2 * np.pi * fc_r * t_r), lowpass, mode="same")
+z_rec = I + 1j * Q
+inner = slice(300, len(t_r) - 300)                                                  # away from the edge effects
+err = np.linalg.norm((z_rec - z_true)[inner]) / np.linalg.norm(z_true[inner])
+print(f"relative error of the recovered complex envelope: {err:.1e}")
+assert err < 5e-3
+print(f"samples per second: the radio signal needs {fs_r}, the envelope needs only about {2 * 60_000} (I and Q at ~{60_000} Hz bandwidth)")
+```
+
+The envelope is recovered, to the precision of the filter, from the real signal
+at the carrier: and its bandwidth is that of the *message* ($60$ kHz here), not
+that of the carrier. This is why an SDR delivers I and Q at the rate of the
+band, and not of the carrier.
+
+### Recovering the message: the discriminator
+
+The last piece of the theory tells us how to read the message from $z$. For FM
+the message is in the angle of $z$, so we need the angle's rate of change. For
+samples, the following is exact.
+
+::: {#prp-discriminator}
+## The FM discriminator
+
+Let $z[n] = a[n]\,e^{j\phi[n]}$ with $a[n] > 0$ and $|\phi[n] - \phi[n-1]| < \pi$.
+Then
+$$
+\frac{F_s}{2\pi}\arg\big(z[n]\,\overline{z[n-1]}\big) = \frac{F_s}{2\pi}\big(\phi[n] - \phi[n-1]\big),
+$$
+whatever the amplitudes $a[n]$. If $\phi[n] = 2\pi\sum_{k\le n}f_k/F_s$, the
+left-hand side equals $f_n$, the instantaneous frequency in Hz.
+:::
+
+::: {.proof}
+$z[n]\overline{z[n-1]} = a[n]a[n-1]\,e^{j(\phi[n] - \phi[n-1])}$, a positive number
+times a unit complex number whose angle is $\phi[n] - \phi[n-1]$. The principal
+value of the angle, $\arg \in (-\pi, \pi]$, equals the difference when the
+difference is in that interval. For the second statement,
+$\phi[n] - \phi[n-1] = 2\pi f_n/F_s$.
+:::
+
+Two consequences matter. First, the FM receiver is **insensitive to the
+amplitude**: fading and interference that change $a[n]$ do not affect the
+output. Second, the discriminator is one line of code. We check both on the
+message of the scaled-down radio:
+
+```{python}
+def discriminator(z, rate):
+    """Instantaneous frequency (Hz) of a complex signal: (rate / 2 pi) arg(z[n] conj(z[n-1]))."""
+    return rate / (2 * np.pi) * np.angle(z[1:] * np.conj(z[:-1]))
+
+freq = discriminator(z_true, fs_r)
+assert np.allclose(freq, 20_000 * msg[1:], atol=1e-8)               # exact, @prp-discriminator
+fading = 1.0 + 0.8 * np.sin(2 * np.pi * 37 * t_r) * rng.uniform(0.5, 1.0, len(t_r))   # an irregular amplitude, always > 0
+freq_fading = discriminator(fading * z_true, fs_r)
+assert np.allclose(freq_fading, freq, atol=1e-8)                    # the amplitude does not matter
+freq_rf = discriminator(z_rec, fs_r)                                # from the mixer's output
+print(f"discriminator on the exact envelope: error {np.max(np.abs(freq - 20_000 * msg[1:])):.1e} Hz; "
+      f"after the mixer: {np.max(np.abs(freq_rf - 20_000 * msg[1:])[300:-300]):.0f} Hz of a deviation of 20000 Hz")
+assert np.max(np.abs(freq_rf - 20_000 * msg[1:])[300:-300]) < 200
+```
+
+## The signal of an FM broadcast station {#sec-sdr-broadcast}
+
+### Stereo on a mono radio
+
+A broadcast station sends two audio channels, left $L$ and right $R$, in a way
+that a mono receiver, which knows nothing about stereo, can still decode a
+good mono signal. It does it with a **composite signal** (or multiplex, MPX)
+$m(t)$, which is the message of the FM modulator. With $L$ and $R$ normalised to
+$|L|, |R| \le 1$:
+$$
+\begin{aligned}
+m(t) &= 0.9\left[\frac{L(t) + R(t)}{2} + \frac{L(t) - R(t)}{2}\sin(2\pi\,38\,\mathrm{kHz}\;t)\right]\\
+&\quad + 0.1\sin(2\pi\,19\,\mathrm{kHz}\;t).
+\end{aligned}
+$$
+The three parts occupy different frequencies:
+
+- $(L + R)/2$, the mono signal, is in the baseband, $0$ to $15$ kHz. A mono receiver
+  decodes this and nothing else, and plays the average of the two channels.
+- The **pilot**, a tone of 19 kHz at 10 % of the deviation, is a flag that says
+  "this is a stereo station", and a phase reference for the receiver.
+- $(L - R)/2$ is shifted to 38 kHz (twice the pilot) by multiplying with a
+  sinusoid, and occupies $23$ to $53$ kHz. Without a carrier: the product has no
+  line at 38 kHz (this is called double-sideband suppressed-carrier modulation),
+  and its phase must be reconstructed by the receiver from the pilot.
+
+A stereo receiver recovers $(L + R)/2$ and $(L - R)/2$ and combines them:
+$L = \tfrac{L+R}{2} + \tfrac{L-R}{2}$, $R = \tfrac{L+R}{2} - \tfrac{L-R}{2}$. The
+normalisation is chosen so that the composite signal does not exceed the deviation.
+
+::: {#prp-composite}
+## The composite signal is bounded
+
+If $|L(t)|, |R(t)| \le 1$ then $|m(t)| \le 1$ for the composite signal above.
+:::
+
+::: {.proof}
+For real $a, b$, $|a + b| + |a - b| = 2\max(|a|, |b|)$ (if $|a| \ge |b|$ both
+terms are $|a| \pm |b|$ added: $|a| + |b| + |a| - |b|$). Hence
+$\big|\tfrac{L+R}{2}\big| + \big|\tfrac{L-R}{2}\big| = \max(|L|, |R|) \le 1$,
+and $|m| \le 0.9\cdot 1 + 0.1 = 1$.
+:::
+
+The bound is what guarantees that the carrier never deviates by more than
+75 kHz: the modulator uses $k_f = 75$ kHz per unit of $m$.
+
+### Pre-emphasis
+
+There is one more ingredient, which comes from noise. In the receiver, the noise
+of an FM demodulator is *not* white: its power density grows with the square of
+the frequency (we measure it in the later stages). The audio of music has most
+of its energy at low frequencies and much less near 15 kHz, so the high
+frequencies are the ones most damaged. The station compensates in advance: it
+boosts the high frequencies before modulating, this is **pre-emphasis**, and the
+receiver cancels the boost with the inverse filter, **de-emphasis**, which
+also lowers the noise at the same frequencies. The time constant of the analog
+curve, $\tau = 50\ \mu$s in Europe and $75\ \mu$s in the Americas, corresponds to
+a corner at $1/(2\pi\tau) = 3.2$ kHz or $2.1$ kHz [@itu450]. We use a digital
+version: the de-emphasis is the one-pole low-pass filter
+$y[n] = (1 - a)x[n] + a\,y[n-1]$ with $a = e^{-1/(\tau F_s)}$, and the pre-emphasis
+is its inverse, a two-tap FIR filter, which is exact:
+
+```{python}
+def pre_emphasis(x, rate, tau=50e-6):
+    """Boost of the high frequencies: the inverse of the one-pole de-emphasis, (x[n] - a x[n-1]) / (1 - a)."""
+    a = np.exp(-1 / (tau * rate))
+    return signal.lfilter([1, -a], [1 - a], x)
+
+def de_emphasis(y, rate, tau=50e-6):
+    """One-pole low-pass with the time constant tau: y[n] = (1 - a) x[n] + a y[n - 1]."""
+    a = np.exp(-1 / (tau * rate))
+    return signal.lfilter([1 - a], [1, -a], y)
+
+x_test = rng.normal(size=5_000)
+assert np.allclose(de_emphasis(pre_emphasis(x_test, 48_000), 48_000), x_test, atol=1e-12)   # exact inverses
+w_, h_ = signal.freqz([1, -np.exp(-1 / (50e-6 * 48_000))], [1 - np.exp(-1 / (50e-6 * 48_000))], worN=[1e-9, 2 * np.pi * 15_000 / 48_000])
+print(f"gain of the pre-emphasis at 15 kHz: {20 * np.log10(abs(h_[1])):.1f} dB "
+      f"(the analog curve 1 + j 2 pi f tau gives {20 * np.log10(abs(1 + 2j * np.pi * 15_000 * 50e-6)):.1f} dB)")
+assert abs(20 * np.log10(abs(h_[1])) - 20 * np.log10(abs(1 + 2j * np.pi * 15_000 * 50e-6))) < 2
+```
+
+### What a station plays: the program material
+
+We need something for the stations to broadcast. To keep the chapter
+self-contained we synthesise four short programs by additive synthesis (a few
+harmonics with an exponential decay, as in a plucked string, @sec-pedalboard): a
+stereo piece with different left and right parts, a mono piece, a stereo chord
+sequence and a second mono piece. Their sound is not important; they are different
+from one another, and the stereo ones have $L \ne R$, so that the receiver can
+show that it reconstructs the stereo image.
+
+```{python}
+fs_audio, fs_mpx, fs_rf = 48_000, 240_000, 960_000             # audio, composite/modulator, tuner output (Hz)
+DURATION = 1.5                                                # seconds of capture
+
+def tone(f, dur, rate, decay=5.0):
+    """A plucked-like tone: four harmonics with an exponential decay and a soft attack."""
+    t = np.arange(int(dur * rate)) / rate
+    y = sum(a * np.sin(2 * np.pi * k * f * t) for k, a in enumerate((1.0, 0.5, 0.25, 0.12), start=1))
+    return y * np.exp(-decay * t) * (1 - np.exp(-300 * t))
+
+def track(notes, step, rate=fs_audio, dur=DURATION, decay=5.0):
+    """Notes given as (frequency in Hz, start in steps): a sequence of tones at a regular step in seconds."""
+    out = np.zeros(int(dur * rate))
+    for f, k in notes:
+        y = tone(f, 0.6, rate, decay)
+        i = int(k * step * rate)
+        out[i:i + len(y)] += y[:len(out) - i]
+    return out
+
+def program(name):
+    """The left and right channels of each station's programme, normalised to a peak of 0.9."""
+    scale = {"C4": 261.63, "E4": 329.63, "G4": 392.0, "A3": 220.0, "D4": 293.66, "F3": 174.61, "C3": 130.81, "B3": 246.94, "A4": 440.0}
+    if name == "A":                                            # stereo: a melody on the left, a bass on the right
+        L = track([(scale[n], k) for k, n in enumerate(["C4", "E4", "G4", "E4", "A4", "G4", "E4", "C4"])], 0.18)
+        R = track([(scale[n], k) for k, n in zip((0, 4), ["C3", "F3"])], 0.36, decay=3.0)
+    elif name == "B":                                          # mono: two alternating tones
+        L = R = track([(scale["A4"] if k % 2 else scale["D4"], k) for k in range(8)], 0.18, decay=7.0)
+    elif name == "C":                                          # stereo: the notes of a chord spread over the channels
+        L = track([(scale["C4"], 0), (scale["G4"], 2), (scale["C4"], 4)], 0.3, decay=3.0)
+        R = track([(scale["E4"], 1), (scale["B3"], 3), (scale["E4"], 5)], 0.3, decay=3.0)
+    else:                                                      # D: mono, a slow descending line
+        L = R = track([(scale[n], k) for k, n in enumerate(["G4", "E4", "D4", "A3"])], 0.35, decay=4.0)
+    peak = max(np.max(np.abs(L)), np.max(np.abs(R)))
+    return 0.9 * L / peak, 0.9 * R / peak
+
+PROGRAMS = {name: program(name) for name in "ABCD"}
+for name, (L, R) in PROGRAMS.items():
+    print(f"station {name}: {'stereo' if not np.allclose(L, R) else 'mono  '}  peak {max(np.max(np.abs(L)), np.max(np.abs(R))):.2f}")
+assert not np.allclose(*PROGRAMS["A"]) and not np.allclose(*PROGRAMS["C"])
+assert np.allclose(*PROGRAMS["B"]) and np.allclose(*PROGRAMS["D"])
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({f"Station {name} ({'stereo' if not np.allclose(*PROGRAMS[name]) else 'mono'})": np.column_stack(PROGRAMS[name])
+       for name in "ABCD"}, fs_audio)
+```
+:::
+
+### Building the composite signal
+
+The station applies the pre-emphasis, limits the peaks (we simply normalise
+them), and builds the composite signal at a rate high enough to hold it: 240 kHz,
+five times the audio rate. The sine at 38 kHz is $\sin(2\theta)$ for the pilot
+$\sin(\theta)$, $\theta = 2\pi\,19\,\mathrm{kHz}\;t$: the subcarrier is locked
+to the pilot, which is what lets the receiver reconstruct it.
+
+```{python}
+def composite(L, R, stereo=True, tau=50e-6):
+    """The composite (MPX) signal at fs_mpx, with peak at most 1, from audio channels at fs_audio."""
+    Lp, Rp = pre_emphasis(L, fs_audio, tau), pre_emphasis(R, fs_audio, tau)
+    peak = max(np.max(np.abs(Lp)), np.max(np.abs(Rp)))
+    Lp, Rp = Lp / peak, Rp / peak                              # a limiter: |L|, |R| <= 1 for @prp-composite
+    L5, R5 = signal.resample_poly(Lp, 5, 1), signal.resample_poly(Rp, 5, 1)
+    theta = 2 * np.pi * 19_000 * np.arange(len(L5)) / fs_mpx
+    if not stereo:
+        return (L5 + R5) / 2                                   # mono station: no pilot, no subcarrier
+    return 0.9 * ((L5 + R5) / 2 + (L5 - R5) / 2 * np.sin(2 * theta)) + 0.1 * np.sin(theta)
+
+MPX = {name: composite(*PROGRAMS[name], stereo=name in "AC") for name in "ABCD"}
+for name, m in MPX.items():
+    print(f"station {name}: composite peak {np.max(np.abs(m)):.3f}")
+    assert np.max(np.abs(m)) <= 1.0 + 0.05                      # @prp-composite (the interpolation filter may overshoot)
+```
+
+@fig-mpx shows the composite signal of a stereo station and a mono one. The
+stereo station has the structure described: mono baseband, pilot, and the
+shifted difference signal around 38 kHz.
+
+```{python}
+#| label: fig-mpx
+#| fig-cap: "Power spectral density of the composite signal of a stereo station (A, blue) and a mono station (B, orange). Stereo: the mono sum $(L+R)/2$ up to 15 kHz, the pilot at 19 kHz and the difference signal $(L-R)/2$ around 38 kHz; the mono station has only the baseband."
+fig, ax = plt.subplots(figsize=(7, 3))
+for name, colour in (("A", "C0"), ("B", "C1")):
+    f, P = welch_psd(MPX[name], fs_mpx, 8192)
+    ax.plot(f / 1e3, 10 * np.log10(P + 1e-20), color=colour, lw=0.8, label=f"station {name}")
+ax.set(xlim=(0, 60), ylim=(-130, -30), xlabel="frequency [kHz]", ylabel="PSD [dB]")
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+
+fa, Pa = welch_psd(MPX["A"], fs_mpx, 8192)
+fb, Pb = welch_psd(MPX["B"], fs_mpx, 8192)
+band = lambda f, P, lo, hi: P[(f >= lo) & (f <= hi)].sum()
+pilot_a, pilot_b = band(fa, Pa, 18.5e3, 19.5e3), band(fb, Pb, 18.5e3, 19.5e3)
+diff_a, diff_b = band(fa, Pa, 23e3, 53e3), band(fb, Pb, 23e3, 53e3)
+print(f"pilot power, stereo / mono station: {10 * np.log10(pilot_a / pilot_b):.0f} dB;  "
+      f"difference band: {10 * np.log10(diff_a / diff_b):.0f} dB")
+assert pilot_a / pilot_b > 1e3 and diff_a / diff_b > 10        # the mono station has neither
+```
+
+## Stage 1: the antenna {#sec-sdr-antenna}
+
+### Modulating the carrier
+
+Each station's composite signal is the message of an FM modulator with
+$k_f = 75$ kHz. We work with the complex envelope $z[n] = e^{j\varphi[n]}$ at
+240 kHz (@sec-sdr-iq): its bandwidth is 180 kHz, so the rate is sufficient. Then
+we raise the rate to the 960 kHz of the tuner's output, with a polyphase
+interpolator (@sec-multirate), and shift the station to its place in the band by
+multiplying by a complex exponential (@sec-complex-numbers): this does the work
+of the carrier, since in the envelope the station's frequency relative to the
+centre of the tuned band is all that remains.
+
+```{python}
+def fm_modulate(m, rate, deviation=75e3):
+    """Complex envelope of an FM signal: z[n] = exp(j 2 pi k_f sum(m) / rate); unit modulus."""
+    return np.exp(2j * np.pi * deviation * np.cumsum(m) / rate)
+
+def station_signal(m, offset):
+    """The FM complex envelope of a station, at the tuner's output rate fs_rf and `offset` Hz from the tuner centre."""
+    z = signal.resample_poly(fm_modulate(m, fs_mpx), fs_rf // fs_mpx, 1)
+    return z * np.exp(2j * np.pi * offset * np.arange(len(z)) / fs_rf)
+
+# Carrier offsets from the centre of the tuned band (the tuner is set at 98.3 MHz): 98.0, 98.2, 98.4, 98.6 MHz.
+STATIONS = {"A": -300e3, "B": -100e3, "C": +100e3, "D": +300e3}
+AMPLITUDE = {"A": 1.0, "B": 0.5, "C": 0.8, "D": 0.12}         # received amplitude: D is a faint, far station
+signals = {name: station_signal(MPX[name], STATIONS[name]) for name in "ABCD"}
+assert all(len(s) == len(signals["A"]) for s in signals.values())
+ripple = {name: np.std(np.abs(s)[2000:-2000]) for name, s in signals.items()}   # modulus should be 1 (constant envelope)
+print("standard deviation of the modulus (ripple of the interpolation filter):",
+      {name: round(float(r), 4) for name, r in ripple.items()})
+assert all(r < 0.01 for r in ripple.values())                                    # constant, up to a small ripple
+print(f"{len(signals['A'])} complex samples per station ({len(signals['A']) / fs_rf:.2f} s at {fs_rf / 1e3:.0f} kS/s)")
+```
+
+### The analog world and the converter
+
+The antenna adds all the stations in the air, together with the noise of the
+amplifier. The tuner's oscillator is never exactly at the frequency it is set to
+(its quartz has a tolerance of some parts per million): at 98.3 MHz, 25 ppm is
+2.5 kHz, so every station appears 2.5 kHz away from where it should be, and the
+receiver will have to find out. Finally the converter rounds I and Q to 8 bits,
+with a range adjusted by an automatic gain control. We store the result as
+interleaved unsigned bytes, *I Q I Q ...*, with the value 127.5 as the zero:
+the format of the cheap USB dongles.
+
+```{python}
+def analog_band(rng, cnr_db=35.0, lo_error=2.5e3):
+    """The band as the mixer delivers it, before the converter: the stations plus noise, shifted by the oscillator's error.
+
+    cnr_db is the carrier-to-noise ratio of the strongest station in its 200 kHz channel."""
+    band_sum = sum(AMPLITUDE[name] * signals[name] for name in "ABCD")
+    n = len(band_sum)
+    noise_var = AMPLITUDE["A"] ** 2 / (10 ** (cnr_db / 10)) * (fs_rf / 200e3)      # per complex sample
+    noise = np.sqrt(noise_var / 2) * (rng.normal(size=n) + 1j * rng.normal(size=n))
+    return (band_sum + noise) * np.exp(2j * np.pi * lo_error * np.arange(n) / fs_rf)  # the oscillator's error
+
+def quantise_iq(x, bits=8):
+    """The converter: interleaved unsigned bytes I Q I Q ... with an automatic gain control."""
+    full_scale = 3.5 * np.sqrt(np.mean(np.abs(x) ** 2) / 2)                          # automatic gain control
+    levels = 2 ** bits - 1
+    to_byte = lambda v: np.clip(np.round((v / full_scale + 1) / 2 * levels), 0, levels).astype(np.uint8)
+    raw = np.empty(2 * len(x), dtype=np.uint8)
+    raw[0::2], raw[1::2] = to_byte(x.real), to_byte(x.imag)
+    return raw
+
+def capture(rng, cnr_db=35.0, lo_error=2.5e3, bits=8):
+    """What an SDR delivers: unsigned bytes I Q I Q ... of the sum of the stations plus noise."""
+    return quantise_iq(analog_band(rng, cnr_db, lo_error), bits)
+
+def bytes_to_iq(raw, bits=8):
+    """Interleaved unsigned bytes back to complex samples in [-1, 1]."""
+    levels = 2 ** bits - 1
+    return ((raw[0::2].astype(float) - levels / 2) + 1j * (raw[1::2].astype(float) - levels / 2)) / (levels / 2)
+
+raw = capture(np.random.default_rng(88))
+iq = bytes_to_iq(raw)
+clipped = np.mean((raw == 0) | (raw == 255))
+print(f"capture: {len(raw)} bytes = {len(iq)} complex samples; samples at full scale: {100 * clipped:.4f} %")
+assert raw.dtype == np.uint8 and len(iq) == len(signals["A"])
+assert clipped < 1e-3
+```
+
+### Looking at the result
+
+Our first view of the capture is its **power spectral density** (@sec-spectral-analysis).
+@fig-capture-psd is what a spectrum-analyser program shows when it is connected to an
+SDR: four bumps, each about 180 kHz wide, over a flat noise floor, the faint
+station D barely above it.
+
+```{python}
+#| label: fig-capture-psd
+#| fig-cap: "Power spectral density of the 8-bit capture, relative to the tuner's centre. The four bumps are the stations A to D, 200 kHz apart; the whole picture is shifted 2.5 kHz by the error of the tuner's oscillator. The dashed lines mark the nominal positions."
+f_cap, P_cap = psd_db(iq, fs_rf)
+fig, ax = plt.subplots(figsize=(7, 3))
+ax.plot(f_cap / 1e3, P_cap, lw=0.7)
+for name, off in STATIONS.items():
+    ax.axvline(off / 1e3, color="C3", ls="--", lw=0.6)
+    ax.text(off / 1e3, P_cap.max() + 2, name, ha="center", color="C3", fontsize=9)
+ax.set(xlabel="frequency from the tuner centre [kHz]", ylabel="PSD [dB]", ylim=(P_cap.min() - 3, P_cap.max() + 8))
+plt.tight_layout()
+plt.show()
+
+floor_mask = (np.abs(f_cap) > 410e3) & (np.abs(f_cap) < 470e3)                 # outside every channel
+floor_lin = np.mean(10 ** (P_cap[floor_mask] / 10))                              # noise density, flat
+df = f_cap[1] - f_cap[0]
+power = {}
+for name, off in STATIONS.items():
+    inside = np.abs(f_cap - off - 2.5e3) < 95e3                                  # the 200 kHz channel, almost
+    power[name] = np.sum(10 ** (P_cap[inside] / 10)) * df - floor_lin * inside.sum() * df   # signal power, noise removed
+print(f"{'station':>8} {'level above the floor':>22} {'power relative to A':>20} {'amplitude chosen':>17}")
+for name in "ABCD":
+    above = 10 * np.log10(np.mean(10 ** (P_cap[np.abs(f_cap - STATIONS[name] - 2.5e3) < 80e3] / 10)) / floor_lin)
+    ratio = 10 * np.log10(power[name] / power["A"])
+    expected = 20 * np.log10(AMPLITUDE[name] / AMPLITUDE["A"])
+    print(f"{name:>8} {above:19.1f} dB {ratio:17.1f} dB {expected:14.1f} dB")
+    assert above > 10                                                            # all four stand out of the noise
+    assert abs(ratio - expected) < 1.0                                           # the power is the amplitude squared
+```
+
+The power measured in each channel follows the amplitudes that we chose for the
+stations (the power of a constant-envelope signal is the square of its amplitude, and
+the spectrum is only the way it is spread: a stereo station occupies more bandwidth
+than a mono one, so its density is lower for the same power). We have
+reached the place where a real receiver starts: an array of complex samples
+from an antenna and a converter, and nothing else. The rest of the project
+takes it from here to a pair of loudspeakers.
+
+## Stage 2: looking at the band {#sec-sdr-spectrum}
+
+A receiver must first find out what is on the air. A real one does what you do
+when you scan the dial: it measures the power in every channel where a station
+could be. FM channels are on a regular grid, 200 kHz apart, so the receiver
+only has to look at a few candidate **channels**, and to call a channel occupied
+when its power is well above the noise floor. The floor is measured where
+there is probably no station: the quietest 100 kHz of the captured band (a crowded
+band has stations at its edges, so the edges are not a safe place to look).
+
+A second question is where *exactly* the carrier is, because the tuner's
+oscillator is not exact. A music signal modulated in frequency has a spectrum
+that is, on average, symmetric around the carrier, so we estimate the carrier
+as the **centroid** of the power inside the channel: the average of the
+frequencies weighted by the power above the noise floor. Since a centroid
+computed in a window that is not centred on the carrier is biased, the estimate is
+repeated three times, each one centring the window on the previous result.
+
+```{python}
+CHANNELS = np.arange(-300e3, 300e3 + 1, 200e3)                 # the 200 kHz grid, as offsets from the tuner centre
+
+def scan_channels(f, P_db, centres=CHANNELS, half=90e3, margin_db=10.0):
+    """Dial scan on a PSD (in dB). Returns [(carrier offset in Hz, carrier-to-noise ratio in dB), ...]
+    for the channels whose power is at least margin_db above the noise floor."""
+    P = 10 ** (P_db / 10)
+    df = f[1] - f[0]
+    n_quiet = int(100e3 / df)
+    floor = np.convolve(P, np.ones(n_quiet) / n_quiet, mode="valid").min()   # noise density: the quietest 100 kHz
+    found = []
+    for c in centres:
+        window = np.abs(f - c) < half
+        cnr = np.sum(P[window] - floor) * df / (floor * 2 * half)         # signal power / noise power in the window
+        if 10 * np.log10(max(cnr, 1e-9)) > margin_db:
+            for _ in range(3):                                           # centroid, re-centred three times
+                window = np.abs(f - c) < half
+                c = np.sum(f[window] * (P[window] - floor)) / np.sum(P[window] - floor)
+            found.append((c, 10 * np.log10(cnr)))
+    return found
+
+f_cap, P_cap = psd_db(iq, fs_rf)
+found = scan_channels(f_cap, P_cap)
+true_carriers = {name: STATIONS[name] + 2.5e3 for name in "ABCD"}      # where the stations really are (tuner error included)
+print(f"{'station':>8} {'estimated carrier':>18} {'true carrier':>14} {'error':>8} {'CNR in 180 kHz':>15}")
+for (c, cnr), name in zip(found, "ABCD"):
+    print(f"{name:>8} {c / 1e3:15.2f} kHz {true_carriers[name] / 1e3:11.2f} kHz {c - true_carriers[name]:5.0f} Hz {cnr:12.1f} dB")
+assert len(found) == 4                                                  # the four stations, and no other channel
+assert all(abs(c - true_carriers[name]) < 300 for (c, _), name in zip(found, "ABCD"))
+tuner_error = np.mean([c - STATIONS[name] for (c, _), name in zip(found, "ABCD")])
+print(f"the receiver has measured the tuner's error: {tuner_error:.0f} Hz")
+assert abs(tuner_error - 2.5e3) < 200
+```
+
+The receiver finds the four stations, rejects the empty channels, and measures the
+oscillator error (2.5 kHz) from the stations themselves. The faint station D is
+found too: it is much weaker than A, but still well above the noise.
+
+## Stage 3: tuning {#sec-sdr-tuning}
+
+To work on one station we move it to zero frequency: multiplying the samples by
+a complex exponential shifts the whole spectrum. In the complex envelope this is
+exact, with no image to filter out, and it costs one complex multiplication
+per sample.
+
+::: {#prp-shift}
+## The frequency shift
+
+Let $X(e^{j\omega})$ be the DTFT of $x[n]$. The DTFT of $y[n] = x[n]e^{-j\omega_0n}$
+is $Y(e^{j\omega}) = X(e^{j(\omega + \omega_0)})$: the spectrum moves by $-\omega_0$ (modulo
+$2\pi$). In Hz, multiplying by $e^{-j2\pi f_0n/F_s}$ moves the spectrum by $-f_0$.
+:::
+
+::: {.proof}
+$Y(e^{j\omega}) = \sum_nx[n]e^{-j\omega_0n}e^{-j\omega n} = \sum_nx[n]e^{-j(\omega + \omega_0)n}$,
+which is $X$ evaluated at $\omega + \omega_0$ (@sec-spectral-analysis).
+:::
+
+```{python}
+def tune(x, f_offset, rate):
+    """Move the spectrum of x down by f_offset Hz (a complex mixer)."""
+    return x * np.exp(-2j * np.pi * f_offset * np.arange(len(x)) / rate)
+
+def centroid(f, P_db, centre, half=90e3):
+    P = 10 ** (P_db / 10)
+    window = np.abs(f - centre) < half
+    return np.sum(f[window] * P[window]) / np.sum(P[window])
+
+carriers = [c for c, _ in found]
+for name, c in zip("ABCD", carriers):
+    f_t, P_t = psd_db(tune(iq, c, fs_rf), fs_rf)
+    cen = centroid(f_t, P_t, 0.0)
+    print(f"station {name}: after tuning, the centroid of its channel is at {cen:7.1f} Hz")
+    assert abs(cen) < 600                                       # the station is now at zero frequency
+```
+
+## Stage 4: selecting the channel {#sec-sdr-channel}
+
+After tuning, the station is at zero frequency, and the neighbours are
+200 kHz above and below it. The capture is at 960 kS/s but a single station is
+only 180 kHz wide, so we want to reduce the rate to 240 kS/s (a factor of 4),
+which makes everything that follows four times cheaper. Decimation is not
+discarding three samples out of four: that would fold everything from 120 kHz up
+into the band we keep (@sec-multirate), including the neighbours, whose
+spectrum is at $\pm200$ kHz and would land at $\mp40$ kHz, on top of our station.
+The signal must be filtered first, with a **channel filter**. The specification
+follows from the signal:
+
+- the passband must carry the station: $\pm90$ kHz (Carson's band, 180 kHz);
+- the stopband must start where the neighbouring station can begin: it is
+  centred 200 kHz away and extends to $\pm90$ kHz around it, so it starts at
+  $200 - 90 = 110$ kHz;
+- the rejection must be well above the difference in strength between stations,
+  which here reaches 18 dB; we ask for 60 dB.
+
+This is a low-pass FIR filter with a transition band of 20 kHz at a sampling
+rate of 960 kHz, and attenuation of 60 dB: a **Kaiser window** design
+(@sec-filter-design). The filter has linear phase, so it delays the signal by
+exactly $(N - 1)/2$ samples, and we compensate it. We implement the filter and
+the decimation together with a polyphase structure (`upfirdn`), which computes only the
+output samples that are kept: one output of $N$ multiplications every four
+input samples, and not four.
+
+```{python}
+#| label: fig-channel-filter
+#| fig-cap: "The channel filter (red) over the spectrum of the capture tuned to station A (blue). It passes the station (|f| < 90 kHz) and removes the neighbours, which start at 110 kHz, by more than 60 dB. Right: after decimation by 4 with the filter the spectrum is clean (blue); without it, by keeping every fourth sample, the neighbours fold on top of the station (orange)."
+def channel_filter(passband=90e3, stopband=110e3, atten=60.0, rate=fs_rf):
+    """Kaiser-window low-pass FIR with the given band edges (Hz) and stopband attenuation (dB)."""
+    n_taps, beta = signal.kaiserord(atten, (stopband - passband) / (rate / 2))
+    n_taps += 1 - n_taps % 2                                      # odd length: integer delay
+    return signal.firwin(n_taps, (passband + stopband) / 2, window=("kaiser", beta), fs=rate)
+
+def select_channel(x, f_offset, h, down=4):
+    """Tune to f_offset, filter with h and decimate by `down` (polyphase), compensating the filter's delay."""
+    y = signal.upfirdn(h, tune(x, f_offset, fs_rf), up=1, down=down)
+    return y[(len(h) - 1) // 2 // down:]
+
+h_ch = channel_filter()
+w_h, H_h = signal.freqz(h_ch, worN=8192, fs=fs_rf)
+stop = w_h >= 110e3
+print(f"channel filter: {len(h_ch)} taps; attenuation beyond 110 kHz: {-20 * np.log10(np.abs(H_h[stop]).max()):.1f} dB; "
+      f"passband ripple: {np.abs(20 * np.log10(np.abs(H_h[w_h <= 90e3]))).max():.3f} dB")
+assert -20 * np.log10(np.abs(H_h[stop]).max()) >= 59.5
+assert np.abs(20 * np.log10(np.abs(H_h[w_h <= 90e3]))).max() < 0.05
+assert (len(h_ch) - 1) // 2 % 4 == 0                            # the delay is a whole number of output samples
+
+tuned_A = tune(iq, carriers[0], fs_rf)
+f_a, P_a = psd_db(tuned_A, fs_rf)
+x_sel = select_channel(iq, carriers[0], h_ch)                    # filtered, 240 kS/s
+x_naive = tuned_A[::4]                                          # every fourth sample, no filter
+f_s, P_s = psd_db(x_sel, fs_mpx, nperseg=1024)
+f_n, P_n = psd_db(x_naive, fs_mpx, nperseg=1024)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.4, 3), gridspec_kw={"width_ratios": [1.3, 1]})
+ax1.plot(f_a / 1e3, P_a, lw=0.6)
+ax1.plot(w_h / 1e3, 20 * np.log10(np.abs(H_h) + 1e-9) + P_a.max() - 10, "C3", lw=0.9)
+ax1.plot(-w_h / 1e3, 20 * np.log10(np.abs(H_h) + 1e-9) + P_a.max() - 10, "C3", lw=0.9)
+ax1.set(xlabel="frequency [kHz]", ylabel="PSD [dB]", title="960 kS/s: tuned, with the filter", ylim=(P_a.min() - 3, P_a.max() + 5))
+ax2.plot(f_n / 1e3, P_n, color="C1", lw=0.7, label="no filter")
+ax2.plot(f_s / 1e3, P_s, color="C0", lw=0.9, label="with the filter")
+ax2.set(xlabel="frequency [kHz]", title="240 kS/s", ylim=(P_s.min() - 3, P_n.max() + 5))
+ax2.legend(fontsize=7)
+plt.tight_layout()
+plt.show()
+```
+
+To measure how well the filter isolates a station we use the linearity of the
+whole process. The capture is the sum of the stations (plus noise); what comes out
+of the filter for the sum is the sum of what comes out for each station. So we
+pass each station *alone* through the tuning, the filter and the decimation, and
+compare the power that comes from the wanted station with the power that comes
+from all the others. We do the same for the naive decimation.
+
+```{python}
+def station_in_air(name):
+    """The (noise-free) contribution of one station to the capture, as the antenna would deliver it."""
+    return AMPLITUDE[name] * signals[name] * np.exp(2j * np.pi * 2.5e3 * np.arange(len(signals[name])) / fs_rf)
+
+def adjacent_channel_ratio_db(wanted, method):
+    """Power of the wanted station over the power of the others at the output of `method`, in dB."""
+    carrier = true_carriers[wanted]
+    own = method(station_in_air(wanted), carrier)
+    others = sum(method(station_in_air(n), carrier) for n in "ABCD" if n != wanted)
+    n = min(len(own), len(others))
+    return 10 * np.log10(np.sum(np.abs(own[:n]) ** 2) / np.sum(np.abs(others[:n]) ** 2))
+
+with_filter = lambda x, c: select_channel(x, c, h_ch)
+without_filter = lambda x, c: tune(x, c, fs_rf)[::4]
+print(f"{'station':>8} {'with the filter':>17} {'every 4th sample':>18}")
+for name in "AC":
+    r_f, r_n = adjacent_channel_ratio_db(name, with_filter), adjacent_channel_ratio_db(name, without_filter)
+    print(f"{name:>8} {r_f:14.1f} dB {r_n:15.1f} dB")
+    assert r_f > 55                                              # the neighbours are suppressed ...
+    assert r_n < 10                                              # ... and, without the filter, they are as strong as the station
+```
+
+With the filter, the neighbours *all together* are more than 55 dB below the station.
+Without it, their power is of the order of the station's own, and the rest of the
+receiver would hear them.
+
+## Stage 5: demodulation {#sec-sdr-demod}
+
+Now the discriminator of @prp-discriminator does its job. Its output
+is the instantaneous frequency in Hz; dividing by the deviation of
+75 kHz gives the composite signal $m$, scaled to the range $[-1, 1]$ of the
+transmitter. Because the tuner and the oscillator of the station are not exactly
+in tune, the frequency has a constant offset, which becomes a constant added to
+$m$ (a DC component): with the centroid estimate from Stage 2 the error is small
+and can be measured as the mean of the output, and removed. This is the
+simplest **automatic frequency control**.
+
+```{python}
+def demodulate(x, rate=fs_mpx, deviation=75e3):
+    """FM demodulation: the discriminator output in units of the deviation, and its mean (the residual offset in Hz)."""
+    m = discriminator(x, rate) / deviation
+    return m - np.mean(m), np.mean(m) * deviation
+
+m_hat, residual = demodulate(x_sel)
+print(f"residual frequency error after the tuning of Stage 2: {residual:.1f} Hz (the offset to start with: 2500 Hz)")
+assert abs(residual) < 100
+
+def align_lag(est, ref, max_lag=2000):
+    """The delay of est with respect to ref in samples, from the peak of their cross-correlation (@sec-signals-as-vectors)."""
+    n = min(len(est), len(ref))
+    X = np.fft.rfft(est[:n] - np.mean(est[:n]), 2 * n)
+    Y = np.fft.rfft(ref[:n] - np.mean(ref[:n]), 2 * n)
+    cc = np.fft.irfft(X * np.conj(Y))
+    cc = np.r_[cc[-max_lag:], cc[:max_lag + 1]]
+    return int(np.argmax(np.abs(cc))) - max_lag
+
+def fit_snr_db(est, ref, skip=0, lag=None):
+    """SNR of est against ref, after aligning them and scaling ref by the least-squares gain."""
+    lag = align_lag(est, ref) if lag is None else lag
+    if lag >= 0:
+        est = est[lag:]
+    else:
+        ref = ref[-lag:]
+    n = min(len(est), len(ref))
+    e, r = est[skip:n], ref[skip:n]
+    g = np.dot(e, r) / np.dot(r, r)
+    return 10 * np.log10(np.sum((g * r) ** 2) / np.sum((e - g * r) ** 2)), lag, g
+
+snr_c, lag_c, gain_c = fit_snr_db(m_hat, MPX["A"], skip=2000)
+print(f"composite signal of station A: SNR {snr_c:.1f} dB against what the station sent (delay {lag_c} samples, gain {gain_c:.3f})")
+assert snr_c > 20 and abs(gain_c - 1) < 0.01                      # the gain is 1: the deviation was recovered correctly
+```
+
+@fig-composite-rx shows the spectrum of the demodulated composite signal of a stereo station
+and of a mono one: the structure of @fig-mpx has come back from the antenna,
+now on top of a floor that grows with frequency.
+
+```{python}
+#| label: fig-composite-rx
+#| fig-cap: "Power spectral density of the composite signal recovered by the receiver for station A (stereo, blue) and station B (mono, orange). The mono sum, the pilot at 19 kHz and the difference signal around 38 kHz of the stereo station are there; beyond 60 kHz there is only noise, which rises with frequency (this is the noise of an FM discriminator)."
+fig, ax = plt.subplots(figsize=(7, 3))
+m_hat_B, _ = demodulate(select_channel(iq, carriers[1], h_ch))
+for name, m_rx, colour in (("A", m_hat, "C0"), ("B", m_hat_B, "C1")):
+    f, P = welch_psd(m_rx, fs_mpx, 8192)
+    ax.plot(f / 1e3, 10 * np.log10(P + 1e-20), color=colour, lw=0.8, label=f"station {name}")
+ax.set(xlim=(0, 110), ylim=(-100, -20), xlabel="frequency [kHz]", ylabel="PSD [dB]")
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+## Stage 6: stereo decoding {#sec-sdr-stereo}
+
+The receiver has the composite signal and must now undo the multiplex of
+@sec-sdr-broadcast. First, it must decide whether the station is stereo: is
+there a pilot? The pilot is a line at 19 kHz, so we compare the power there
+with the power in two quiet bands next to it.
+
+```{python}
+def pilot_level_db(m, rate=fs_mpx):
+    """Power around 19 kHz relative to the power at 17-18 kHz and 20-21 kHz, in dB."""
+    f, P = welch_psd(m, rate, 8192)
+    near = P[(f > 18.9e3) & (f < 19.1e3)].mean()
+    around = P[((f > 17e3) & (f < 18e3)) | ((f > 20e3) & (f < 21e3))].mean()
+    return 10 * np.log10(near / around)
+
+levels = {}
+for name, c in zip("ABCD", carriers):
+    levels[name] = pilot_level_db(demodulate(select_channel(iq, c, h_ch))[0])
+    print(f"station {name}: pilot {levels[name]:5.1f} dB above its surroundings -> {'stereo' if levels[name] > 15 else 'mono'}")
+assert levels["A"] > 15 and levels["C"] > 15 and levels["B"] < 6 and levels["D"] < 6
+```
+
+A **mono** station (or a stereo one that we decode as mono) needs only the
+baseband: a low-pass filter of 15 kHz that removes the pilot and the difference
+signal gives $0.9(L + R)/2$. For stereo we need $(L - R)/2$, which is
+$\sin(2\pi\,38\,\mathrm{kHz}\,t)$ times the signal. To undo a multiplication by
+a sinusoid we multiply by the same sinusoid, **in phase** with the one that
+the station used. We have a way of knowing the phase: the pilot. Its frequency
+is half that of the subcarrier and the station keeps them locked.
+
+### The phase-locked loop
+
+We recover the phase of the pilot with a **phase-locked loop** (PLL), the same
+device that synchronised the carrier of the modem in @sec-modem-sync. A local
+oscillator (an NCO) produces a sine with phase $\hat\theta[n]$. A *phase
+detector* multiplies it by the received pilot: since
+$\sin\theta\cos\hat\theta = \tfrac12[\sin(\theta - \hat\theta) + \sin(\theta + \hat\theta)]$,
+the product contains a term $\tfrac12\sin(\theta - \hat\theta)$, proportional to the
+phase error, plus a term at 38 kHz that the loop's own lag smooths away. A
+*loop filter* of proportional and integral action turns the error into a correction
+of the oscillator's frequency, and the oscillator accumulates it:
+$$
+\begin{aligned}
+e[n] &= p[n]\cos\hat\theta[n],\\
+\hat\theta[n+1] &= \hat\theta[n] + \omega_0 + k_pe[n] + s[n],\\
+s[n] &= s[n-1] + k_ie[n],
+\end{aligned}
+$$
+where $\omega_0 = 2\pi\cdot19\,\mathrm{kHz}/F_s$ is the nominal frequency and $s$ is
+the integrator, which learns the small deviation between the oscillator and the
+pilot. When the loop is locked, $\theta - \hat\theta \approx 0$ and
+$\sin(2\hat\theta)$ is the subcarrier. The gains follow from the loop's natural
+frequency $\omega_n$ and damping $\zeta$ (we take $\zeta = 0.707$ and a bandwidth
+of 50 Hz), for a detector gain $K_d = A_p/2$ with $A_p$ the amplitude of the pilot:
+$k_p = 2\zeta\omega_n/K_d$, $k_i = \omega_n^2/K_d$.
+
+```{python}
+#| label: fig-pll
+#| fig-cap: "The phase-locked loop acquiring the pilot of station A. Top: the phase detector's output $e[n]$ (blue) and its average over 1 ms (orange); the loop locks in the first milliseconds and then the average is zero. Bottom: the frequency that the loop's integrator has learned, which settles at the pilot's offset from the nominal 19 kHz."
+def pilot_pll(p, rate=fs_mpx, f0=19e3, bandwidth=50.0, zeta=0.707):
+    """Second-order phase-locked loop on a real pilot p = A sin(theta). Returns theta_hat[n], e[n], s[n]."""
+    omega_n = 2 * np.pi * bandwidth / rate
+    amplitude = np.sqrt(2 * np.mean(p ** 2))
+    k_d = amplitude / 2
+    k_p, k_i = 2 * zeta * omega_n / k_d, omega_n ** 2 / k_d
+    w0 = 2 * np.pi * f0 / rate
+    theta, integrator = 0.0, 0.0
+    th, err, freq = np.empty(len(p)), np.empty(len(p)), np.empty(len(p))
+    for n in range(len(p)):
+        th[n] = theta
+        e = p[n] * np.cos(theta)                             # the phase detector
+        integrator += k_i * e
+        theta += w0 + k_p * e + integrator
+        err[n], freq[n] = e, integrator
+    return th, err, freq
+
+def extract_pilot(m, rate=fs_mpx):
+    """The pilot: a band-pass FIR filter around 19 kHz (zero delay: the convolution is centred)."""
+    return np.convolve(m, signal.firwin(401, [18.5e3, 19.5e3], pass_zero=False, fs=rate), mode="same")
+
+pilot_A = extract_pilot(m_hat)
+theta_A, err_A, freq_A = pilot_pll(pilot_A)
+t_ms = np.arange(len(err_A)) / fs_mpx * 1e3
+avg = np.convolve(err_A, np.ones(240) / 240, mode="same")                         # 1 ms average
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 3.8), sharex=True)
+ax1.plot(t_ms[:6000], err_A[:6000], lw=0.4, label="$e[n]$")
+ax1.plot(t_ms[:6000], avg[:6000], lw=1.2, label="1 ms average")
+ax1.set(ylabel="phase detector"); ax1.legend(fontsize=7)
+ax2.plot(t_ms[:6000], freq_A[:6000] * fs_mpx / (2 * np.pi), lw=1)
+ax2.set(xlabel="time [ms]", ylabel="learned offset [Hz]")
+plt.tight_layout()
+plt.show()
+
+locked = np.abs(avg[24000:]).max()                                                 # after 0.1 s
+print(f"phase detector, averaged over 1 ms, after 0.1 s: at most {locked:.2e}  (pilot amplitude {np.sqrt(2 * np.mean(pilot_A ** 2)):.3f})")
+assert locked < 0.1 * np.sqrt(2 * np.mean(pilot_A ** 2)) / 2          # a tenth of the detector's full range
+```
+
+### Decoding the difference signal
+
+With the subcarrier $\sin(2\hat\theta)$ we multiply the composite signal by it and
+low-pass filter: the product of $\tfrac{L-R}{2}\sin(2\theta)$ by $2\sin(2\hat\theta)$ is
+$\tfrac{L-R}{2}[1 - \cos(4\theta)]$, whose first term is the baseband
+signal we want and the second one is at 76 kHz and is removed by the filter. The
+matrix then gives the channels, as in @sec-sdr-broadcast. How important is the
+phase of the subcarrier?
+
+::: {#prp-stereo-phase}
+## Stereo separation against the phase error
+
+Let the receiver regenerate the subcarrier with a phase error $\varepsilon$,
+$\sin(2\theta + \varepsilon)$ instead of $\sin(2\theta)$, and let $M = (L + R)/2$ and
+$D = (L - R)/2$. Then the decoded signals are $M$ and $D\cos\varepsilon$ (apart from
+the low-pass filtering and the scale), and
+$$
+\hat L = M + D\cos\varepsilon = \frac{1 + \cos\varepsilon}{2}\,L + \frac{1 - \cos\varepsilon}{2}\,R .
+$$
+Crosstalk: the right channel appears in the left output with the relative
+amplitude $\dfrac{1 - \cos\varepsilon}{1 + \cos\varepsilon} = \tan^2(\varepsilon/2)$.
+:::
+
+::: {.proof}
+$2\sin(2\theta + \varepsilon)\sin(2\theta) = \cos\varepsilon - \cos(4\theta + \varepsilon)$, and the low-pass filter keeps
+$\cos\varepsilon$ times $D$. Then $M + D\cos\varepsilon$ gives the formula, because
+$M = (L + R)/2$ and $D = (L - R)/2$. The ratio of the coefficients is
+$(1 - \cos\varepsilon)/(1 + \cos\varepsilon) = \tan^2(\varepsilon/2)$ by the half-angle identities.
+:::
+
+The loop keeps $\varepsilon$ almost zero, but the proposition shows why it is needed:
+a phase error of $15°$, small to the eye, leaves a separation of 35 dB, one of $60°$
+only 9.5 dB. We implement the decoder and test the proposition by deliberately
+adding an error to the subcarrier, and measure the separation by fitting the
+received left channel to the transmitted $L$ and $R$ by least squares
+(@sec-signals-as-vectors): the ratio of the two coefficients is the crosstalk.
+
+```{python}
+LOWPASS_15K = signal.firwin(255, 15e3, fs=fs_mpx, window=("kaiser", 7.0))
+
+def stereo_decode(m, theta, phase_error=0.0):
+    """Mono sum M and difference D (both scaled back by the 0.9 of the composite) from the composite m and the pilot phase."""
+    subcarrier = np.sin(2 * theta + phase_error)
+    M = np.convolve(m, LOWPASS_15K, mode="same") / 0.9
+    D = np.convolve(2 * m * subcarrier, LOWPASS_15K, mode="same") / 0.9
+    return M, D
+
+def separation_db(left, ref_L, ref_R, skip=7200):
+    """Least-squares fit of the received channel on [L, R]; returns (crosstalk as a ratio in dB, SNR in dB)."""
+    lag = align_lag(left, ref_L)
+    e, rl, rr = (left[lag:], ref_L, ref_R) if lag >= 0 else (left, ref_L[-lag:], ref_R[-lag:])
+    n = min(len(e), len(rl))
+    A = np.column_stack([rl[skip:n], rr[skip:n]])
+    coef, *_ = np.linalg.lstsq(A, e[skip:n], rcond=None)
+    residual = e[skip:n] - A @ coef
+    return 20 * np.log10(abs(coef[0] / coef[1])), 10 * np.log10(np.sum((A @ coef) ** 2) / np.sum(residual ** 2))
+
+def to_audio_rate(x):
+    """From 240 kHz to 48 kHz: keep every fifth sample (the 15 kHz low-pass of the decoder has already filtered)."""
+    return x[::5]
+
+L_ref, R_ref = PROGRAMS["A"]
+print(f"{'phase error':>12} {'separation':>11} {'tan^2(e/2)':>11}")
+for deg in (0, 15, 30, 60):
+    eps = np.radians(deg)
+    M, D = stereo_decode(m_hat, theta_A, phase_error=eps)
+    left = de_emphasis(to_audio_rate(M + D), fs_audio)
+    sep, _ = separation_db(left, L_ref, R_ref)
+    theory = -20 * np.log10(np.tan(eps / 2) ** 2) if deg else np.inf
+    print(f"{deg:9d} deg {sep:8.1f} dB {theory:8.1f} dB")
+    if deg:
+        assert abs(sep - theory) < 1.0                              # @prp-stereo-phase
+    else:
+        assert sep > 40                                             # the loop's own phase error is tiny
+```
+
+The measured separation follows $\tan^2(\varepsilon/2)$ to within a decibel, and with the
+loop's phase the stereo image of station A is excellent. The loop also settles
+very fast, in a few milliseconds, but its transient distorts the start of the
+audio, so we discard the first 0.15 s of every channel when we measure.
+
+## Stage 7: the audio {#sec-sdr-audio}
+
+What remains is simple. The decoder already filtered at 15 kHz, so reducing the rate
+from 240 kHz to 48 kHz is keeping every fifth sample (@sec-multirate): a
+second, much cheaper decimation stage. And the **de-emphasis** that cancels the
+pre-emphasis of the station, which in the receiver also lowers the noise of the highest frequencies
+(@sec-sdr-noise): it is the exact inverse of the filter of the transmitter,
+so, together, they cancel. We assemble the whole chain in a function of the raw
+bytes, which is the receiver.
+
+```{python}
+def receive_station(x, carrier, h=h_ch):
+    """One station from the capture x (complex, 960 kS/s): stereo audio at 48 kHz and measurements."""
+    m, residual = demodulate(select_channel(x, carrier, h))
+    stereo_level = pilot_level_db(m)
+    is_stereo = stereo_level > 15
+    if is_stereo:
+        theta, _, _ = pilot_pll(extract_pilot(m))
+        M, D = stereo_decode(m, theta)
+        L, R = M + D, M - D
+    else:
+        M = np.convolve(m, LOWPASS_15K, mode="same") / 0.9
+        L = R = M
+    audio = np.column_stack([de_emphasis(to_audio_rate(L), fs_audio), de_emphasis(to_audio_rate(R), fs_audio)])
+    return {"audio": audio, "stereo": bool(is_stereo), "pilot_db": stereo_level, "offset": carrier, "residual_hz": residual}
+
+def to_receiver_rate(x, rate):
+    """Remove the DC offset of the tuner and, if the capture was made at another rate, resample it to fs_rf."""
+    x = x - np.mean(x)
+    if rate != fs_rf:
+        ratio = Fraction(fs_rf, int(rate)).limit_denominator(1000)
+        x = signal.resample_poly(x, ratio.numerator, ratio.denominator)
+    return x
+
+def fm_receiver(raw_bytes, rate=fs_rf, centres=CHANNELS):
+    """The receiver: unsigned 8-bit I/Q bytes in (recorded at `rate` S/s, with stations on the grid `centres`),
+    a list of stations with their stereo audio out."""
+    x = to_receiver_rate(bytes_to_iq(raw_bytes), rate)
+    f, P = psd_db(x, fs_rf)
+    return [dict(receive_station(x, carrier), cnr_db=cnr) for carrier, cnr in scan_channels(f, P, centres=centres)]
+
+stations_rx = fm_receiver(raw)
+print(f"{'station':>8} {'carrier':>11} {'CNR':>8} {'type':>7} {'audio SNR L':>12} {'audio SNR R':>12}")
+scores = {}
+for name, st in zip("ABCD", stations_rx):
+    L_ref, R_ref = PROGRAMS[name]
+    snr_L = fit_snr_db(st["audio"][:, 0], L_ref, skip=7200)[0]
+    snr_R = fit_snr_db(st["audio"][:, 1], R_ref, skip=7200)[0]
+    scores[name] = (snr_L, snr_R)
+    print(f"{name:>8} {st['offset'] / 1e3:8.1f} kHz {st['cnr_db']:5.1f} dB {'stereo' if st['stereo'] else 'mono':>7} {snr_L:9.1f} dB {snr_R:9.1f} dB")
+assert [st["stereo"] for st in stations_rx] == [True, False, True, False]
+assert min(scores["A"]) > 20 and min(scores["C"]) > 20 and min(scores["B"]) > 20
+assert min(scores["D"]) > 8                                        # the faint station is noisy, but there
+```
+
+The receiver recognises that A and C are stereo and B and D mono, and recovers
+the audio of each with a signal-to-noise ratio above 20 dB; station D, which is much closer to the
+noise, comes out noisier. For the strong stations the limit is not
+the radio noise: it is the distortion of squeezing the signal into a 200 kHz channel, which
+we measure in @sec-sdr-noise. @fig-audio-rx compares what station A sent with what we received.
+
+```{python}
+#| label: fig-audio-rx
+#| fig-cap: "Station A: the left (top) and right (bottom) channels that the station sent (blue) and what the receiver recovers (orange, scaled by the best gain and shifted by the delay of the chain), over 0.35 s. The two channels are different, and the receiver keeps them apart."
+st_A = stations_rx[0]
+L_ref, R_ref = PROGRAMS["A"]
+fig, axes = plt.subplots(2, 1, figsize=(7, 3.6), sharex=True)
+for ax, ch, ref, label in ((axes[0], 0, L_ref, "left"), (axes[1], 1, R_ref, "right")):
+    rx = st_A["audio"][:, ch]
+    snr, lag, gain = fit_snr_db(rx, ref, skip=7200)
+    n = min(len(rx) - max(lag, 0), len(ref) - max(-lag, 0))
+    seg = slice(8000, 8000 + 16800)
+    sent = ref[max(-lag, 0):][:n]
+    got = rx[max(lag, 0):][:n] / gain
+    tt = np.arange(n) / fs_audio
+    ax.plot(tt[seg], sent[seg], lw=0.8, label="sent")
+    ax.plot(tt[seg], got[seg], lw=0.8, label="received")
+    ax.set(ylabel=label)
+axes[0].legend(fontsize=7, loc="upper right")
+axes[1].set_xlabel("time [s]")
+plt.tight_layout()
+plt.show()
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({f"What station {name} sent": np.column_stack(PROGRAMS[name]) for name in "AD"}
+      | {f"What the receiver heard of station {name}": st["audio"] / np.max(np.abs(st["audio"]))
+         for name, st in zip("ABCD", stations_rx) if name in "AD"}, fs_audio)
+```
+
+Listen to the received station D: it is the faint one, and you can hear the noise
+that a weak signal brings, a hiss that rises with frequency, as we are going to
+see in the next section.
+:::
+
+## Stage 8: measurements {#sec-sdr-noise}
+
+A receiver is judged by how well it does with *weak* stations. How does the
+quality of the audio depend on the strength of the signal? This is where FM
+differs from AM, and we can answer it.
+
+### The noise of an FM receiver
+
+The discriminator output has a particular noise. Suppose that the carrier has
+amplitude $A$ and that the noise $w$ is much smaller. The received signal is
+$A e^{j\varphi} + w = Ae^{j\varphi}(1 + \tilde w/A)$, with $\tilde w = we^{-j\varphi}$ a noise
+of the same statistics as $w$. To first order in $\tilde w/A$, the angle of the signal
+is $\varphi + \operatorname{Im}(\tilde w)/A$: *the noise adds a phase*
+$\operatorname{Im}(\tilde w)/A$ to the message. If the noise has a power density $N_0$ (complex,
+two-sided), its imaginary part has $N_0/2$, so the phase noise has power density
+$N_0/(2A^2)$ rad$^2$/Hz, and it is white. The discriminator is a derivative
+(a difference of the phase, @prp-discriminator): it multiplies the amplitude by $2\pi f$ and
+the density by $(2\pi f)^2$, and with the factor $1/(2\pi)$ of the conversion to Hz,
+$$
+S_f(f) = \frac{N_0}{2A^2}\,f^2\quad\text{(Hz}^2\text{/Hz)}.
+$$
+*The noise at the output of an FM discriminator grows with the square of
+the frequency.* This is the first-order approximation, valid when the carrier is
+much stronger than the noise, and we are going to test it. Integrating it over the audio
+band $[-W, W]$ gives the noise power $N_0W^3/(3A^2)$. For a message of power $P_m$ (relative
+to a maximum of 1) the signal power is $\Delta f^2P_m$, and therefore
+$$
+\mathrm{SNR}_{\text{out}} = 3\beta^2P_m\,\mathrm{CNR}_W,\qquad
+\beta = \frac{\Delta f}{W},\quad
+\mathrm{CNR}_W = \frac{A^2}{N_0W}.
+$$
+The output SNR is proportional to the carrier-to-noise ratio ($1$ dB more carrier gives
+$1$ dB more audio) with a gain of $3\beta^2P_m$ that grows with the deviation: *FM
+exchanges bandwidth for noise*. For a broadcast station $\beta = 75/15 = 5$ and, for
+a tone, $P_m = 1/2$, so the gain is $3\cdot25/2 = 37.5$, 15.7 dB. We test it with a
+1 kHz tone modulated with the full deviation, in noise at different strengths. The
+carrier-to-noise ratio is measured in the 240 kHz bandwidth of the simulation.
+
+```{python}
+#| label: fig-fm-threshold
+#| fig-cap: "Output signal-to-noise ratio of an FM discriminator against the carrier-to-noise ratio (in 240 kHz), for a 1 kHz tone with a deviation of 75 kHz. Dots: simulation. Dashed line: the first-order formula $3\\beta^2P_m\\,\\mathrm{CNR}_W$. Above about 12 dB the audio improves 1 dB for each dB of carrier; below it the noise creates clicks and the quality collapses (the threshold of FM)."
+def fm_tone_snr_db(cnr_db, rng, deviation=75e3, W=15e3, rate=fs_mpx, cycles=999):
+    """Output SNR of the discriminator for a 1 kHz tone, at a carrier-to-noise ratio (in `rate` Hz) of cnr_db."""
+    n = 240 * cycles                                              # output samples: a whole number of cycles of the 1 kHz tone
+    t = np.arange(n + 1) / rate
+    z = np.exp(2j * np.pi * deviation * np.cumsum(np.cos(2 * np.pi * 1e3 * t)) / rate)
+    sigma2 = 10 ** (-cnr_db / 10)                                 # carrier power 1; noise power in `rate` Hz
+    z = z + np.sqrt(sigma2 / 2) * (rng.normal(size=n + 1) + 1j * rng.normal(size=n + 1))
+    F = np.fft.rfft(discriminator(z, rate)) / n                   # the discriminator gives n samples
+    freqs = np.fft.rfftfreq(n, 1 / rate)
+    signal_power = 2 * np.abs(F[cycles]) ** 2
+    noise_power = np.sum(2 * np.abs(F[freqs <= W]) ** 2) - signal_power
+    return 10 * np.log10(signal_power / noise_power)
+
+beta_b, Pm = 75e3 / 15e3, 0.5
+cnr_grid = np.arange(0, 41, 2.0)
+measured = np.array([fm_tone_snr_db(c, np.random.default_rng(int(c) + 1)) for c in cnr_grid])
+theory = 10 * np.log10(3 * beta_b ** 2 * Pm) + cnr_grid + 10 * np.log10(fs_mpx / 15e3)
+print(f"{'CNR [dB]':>9} {'measured':>10} {'theory':>8}")
+for c, m_, t_ in zip(cnr_grid[::2], measured[::2], theory[::2]):
+    print(f"{c:9.0f} {m_:8.1f} dB {t_:6.1f} dB")
+above = cnr_grid >= 14
+assert np.max(np.abs(measured[above] - theory[above])) < 0.7          # the first-order formula is right above the threshold
+below = cnr_grid <= 6
+assert np.all(theory[below] - measured[below] > 5)                    # and the audio collapses below it
+threshold = cnr_grid[np.argmax(measured - theory > -1.0)]
+print(f"threshold (the first point within 1 dB of the formula): CNR = {threshold:.0f} dB")
+assert 6 <= threshold <= 14
+
+fig, ax = plt.subplots(figsize=(7, 3.2))
+ax.plot(cnr_grid, theory, "--", color="C3", label="formula")
+ax.plot(cnr_grid, measured, "o", ms=4, label="simulation")
+ax.axvline(threshold, color="0.5", lw=0.7, ls=":")
+ax.set(xlabel="carrier-to-noise ratio [dB]", ylabel="output SNR [dB]")
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+The formula is right to within a fraction of a decibel from about 12 dB of
+carrier-to-noise ratio, and below it the audio falls much faster than the
+carrier: the **FM threshold**. It is the reason why a weak FM station does not
+fade gradually like an AM one: it is clean, and then crackles, and then it is
+lost.
+
+::: {.content-visible when-format="html"}
+::: {.callout-tip}
+## Try it: hear the threshold
+
+This box makes a 1 kHz tone, modulates it, adds noise at five carrier strengths and plays the
+tone recovered by the discriminator, from the strongest carrier to the weakest. Listen to how the tone
+gets noisier and how, below a threshold, the noise changes character. Change the list of
+strengths and the deviation `dev` to explore.
+
+```{.pyodide}
+import io, base64, wave
+import numpy as np
+
+rng = np.random.default_rng(1)
+fs, dev, n = 48_000, 12_000, 48_000                         # 48 kHz so that it can be played directly
+t = np.arange(n) / fs
+z = np.exp(2j * np.pi * dev * np.cumsum(0.8 * np.cos(2 * np.pi * 1000 * t)) / fs)
+
+def player(x, label):
+    pcm = np.round(np.clip(x / 12_000, -1, 1) * 32767).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(fs); w.writeframes(pcm.tobytes())
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f'<div>{label}<br><audio controls src="data:audio/wav;base64,{b64}"></audio></div>'
+
+class Players:
+    def __init__(self, cnrs):
+        self.html = ""
+        for cnr in cnrs:
+            noise = np.sqrt(10 ** (-cnr / 10) / 2) * (rng.normal(size=n) + 1j * rng.normal(size=n))
+            r = z + noise
+            f = np.angle(r[1:] * np.conj(r[:-1])) * fs / (2 * np.pi)
+            self.html += player(f, f"carrier-to-noise ratio {cnr} dB")
+    def _repr_html_(self):
+        return self.html
+
+Players([30, 15, 10, 7, 4])
+```
+:::
+:::
+
+### Pre-emphasis against noise
+
+The noise that grows like $f^2$ is the reason for the pre-emphasis and de-emphasis of
+@sec-sdr-broadcast. We can check both the growth and the gain: with only a carrier plus
+noise (no message), the spectrum of the discriminator's output is the noise,
+and its slope on a log-log plot must be 2. And the de-emphasis, which attenuates the
+high frequencies where the noise is strongest, must lower the noise power by the ratio
+of two integrals,
+$$
+\frac{\int_0^Wf^2\,df}{\int_0^Wf^2\,|H_{\mathrm{de}}(f)|^2\,df}.
+$$
+
+```{python}
+rng_n = np.random.default_rng(3)
+n_n = fs_mpx                                                   # one second
+sigma2 = 10 ** (-30 / 10)                                      # carrier 30 dB over the noise: first order is valid
+w_n = np.sqrt(sigma2 / 2) * (rng_n.normal(size=n_n) + 1j * rng_n.normal(size=n_n))
+noise_only = discriminator(1.0 + w_n, fs_mpx)                  # the carrier alone, plus noise
+f_nz, P_nz = welch_psd(noise_only, fs_mpx, 4096)
+band = (f_nz > 5e3) & (f_nz < 40e3)
+slope = np.polyfit(np.log10(f_nz[band]), np.log10(P_nz[band]), 1)[0]
+print(f"slope of the noise spectrum between 5 and 40 kHz: {slope:.2f} (the formula says 2)")
+assert 1.8 < slope < 2.1
+
+audio_noise = to_audio_rate(np.convolve(noise_only, LOWPASS_15K, mode="same"))        # the noise in the audio band, 48 kHz
+a_de = np.exp(-1 / (50e-6 * fs_audio))
+with_de = de_emphasis(audio_noise, fs_audio)
+measured_gain = 10 * np.log10(np.var(audio_noise[1000:-1000]) / np.var(with_de[1000:-1000]))
+ff = np.linspace(0, 15e3, 20001)
+H2 = np.abs((1 - a_de) / (1 - a_de * np.exp(-2j * np.pi * ff / fs_audio))) ** 2
+predicted_gain = 10 * np.log10(np.sum(ff ** 2) / np.sum(ff ** 2 * H2))
+print(f"noise reduction by the de-emphasis: measured {measured_gain:.2f} dB, predicted {predicted_gain:.2f} dB")
+assert abs(measured_gain - predicted_gain) < 0.7
+```
+
+The de-emphasis makes the noise about 9 dB lower, and it does not affect the music,
+which the station had pre-emphasised: the two filters cancel, and the noise was
+added in between. It is a gain obtained at no cost, only by agreement between the
+transmitter and the receiver.
+
+### The price of stereo
+
+There is a price for stereo, and it can also be computed. In the stereo decoder
+the noise of $\hat L = M + D$ has two parts: that of $M$, from the baseband
+0–15 kHz, and that of $D$, which comes from the band around 38 kHz (23–53 kHz).
+Since the noise power density grows like $f^2$, the second is stronger. With
+$S_f \propto f^2$, the noise of $M$ is proportional to $\int_{-15}^{15}f^2\,df$ and that of $D$
+to $\int_{23}^{53}f^2\,df + \int_{-53}^{-23}f^2\,df$ (the two sidebands both add noise), so
+$$
+\frac{\text{noise of }\hat L\text{ in stereo}}{\text{noise of }\hat L\text{ in mono}}
+= 1 + \frac{53^3 - 23^3}{15^3} = 41.5 \approx 16\ \text{dB}.
+$$
+
+```{python}
+subcarrier_ideal = np.sin(2 * 2 * np.pi * 19e3 * np.arange(len(noise_only)) / fs_mpx)   # any phase: the noise is stationary
+M_n = np.convolve(noise_only, LOWPASS_15K, mode="same") / 0.9
+D_n = np.convolve(2 * noise_only * subcarrier_ideal, LOWPASS_15K, mode="same") / 0.9
+penalty = 10 * np.log10(np.var((M_n + D_n)[2000:-2000]) / np.var(M_n[2000:-2000]))
+predicted = 10 * np.log10(1 + (53 ** 3 - 23 ** 3) / 15 ** 3)
+print(f"noise of the stereo channel over the mono one: measured {penalty:.1f} dB, predicted {predicted:.1f} dB")
+assert abs(penalty - predicted) < 1.5
+```
+
+Stereo is about 16 dB noisier than mono for the same signal strength. For this reason
+a real receiver, when the signal weakens, **blends** to mono before the
+quality of the stereo becomes worse than that of a mono station.
+
+### The price of selectivity
+
+One thing is still unexplained. The strong stations, whose carrier is 30 dB or more above
+the noise, do not come out with a better audio SNR than the weak one, and the formula
+above would predict much more. What limits them is not noise. An FM signal with a
+deviation of 75 kHz extends beyond the 180 kHz of Carson's band, with little power, and a
+channel filter that cuts at 100 kHz removes it: the audio is *distorted*. This is the
+**selectivity-fidelity trade-off**: a narrow filter rejects the neighbours better and
+distorts the station more. We measure the distortion with a single station and no
+noise, passed through three channel filters of different width.
+
+```{python}
+x_A = station_in_air("A")                                       # station A alone, without noise or neighbours
+print(f"{'passband / stopband of the channel filter':>44} {'audio SNR':>10}")
+snr_by_width = {}
+for passband, stopband in ((90e3, 110e3), (110e3, 130e3), (140e3, 170e3)):
+    st = receive_station(x_A, true_carriers["A"], channel_filter(passband, stopband))
+    snr_by_width[passband] = fit_snr_db(st["audio"][:, 0], PROGRAMS["A"][0], skip=7200)[0]
+    print(f"{passband / 1e3:21.0f} kHz / {stopband / 1e3:4.0f} kHz {snr_by_width[passband]:17.1f} dB")
+assert snr_by_width[140e3] > snr_by_width[90e3] + 8              # a wider channel, a more faithful audio
+```
+
+With a channel of 90 kHz on each side the audio has the quality that we have been
+measuring; with a much wider one (which would let the neighbours in) it improves a lot.
+A real receiver chooses the width with the stations around it: in a crowded band it
+sacrifices fidelity for selectivity.
+
+## Stage 9: real data {#sec-sdr-real}
+
+The function `fm_receiver` takes *bytes*: it does not know that the capture is
+synthetic. The programs that record from a dongle (the `rtl_sdr` utility of the
+RTL-SDR project, for instance) write exactly that, interleaved unsigned 8-bit
+I and Q, to a file. We check that a trip through a file, byte by byte, changes
+nothing; replacing the file by a real recording is then all that is left to do.
+
+```{python}
+file_like = io.BytesIO()
+file_like.write(raw.tobytes())                                  # "save the capture to a file" ...
+reloaded = np.frombuffer(file_like.getvalue(), dtype=np.uint8)  # ... "and read it back"
+assert np.array_equal(reloaded, raw)
+again = fm_receiver(reloaded)
+assert all(np.array_equal(a["audio"], b["audio"]) for a, b in zip(again, stations_rx))
+print(f"a file round trip changes nothing: {len(again)} stations, audio bit-identical")
+```
+
+### A recording made at another rate
+
+A real dongle does not record at 960 kS/s: its usual rates are 1.024, 1.8 or 2.4 MS/s,
+and whoever records chooses the tuning frequency, normally that of the station that
+interests them. That puts the station at zero frequency and its neighbours at
+$\pm200$ and $\pm400$ kHz, which is not our grid. The receiver adapts in two
+places. `to_receiver_rate` removes the DC offset (a tuner has a line at zero
+frequency that is not a station) and resamples the capture to 960 kS/s by a
+rational factor (for 1.024 MS/s, $15/16$), and the dial scan takes its grid as a
+parameter. We test both by recording our sky again with a dongle that is tuned to the
+carrier of station C and samples at 1.024 MS/s.
+
+```{python}
+rate_dongle = 1_024_000
+x_sky = analog_band(np.random.default_rng(88))                                   # the same sky as before
+x_retuned = x_sky * np.exp(-2j * np.pi * STATIONS["C"] * np.arange(len(x_sky)) / fs_rf)   # tuner centre moved to C
+x_dongle = signal.resample_poly(x_retuned, 16, 15)                               # the converter runs at 1.024 MS/s
+raw_dongle = quantise_iq(x_dongle)
+grid_centred = np.arange(-400e3, 401e3, 200e3)                                   # C at 0; A, B and D at -400, -200, +200
+
+rx_dongle = fm_receiver(raw_dongle, rate=rate_dongle, centres=grid_centred)
+print(f"{len(raw_dongle) // 2} samples at {rate_dongle / 1e6:.3f} MS/s; the receiver finds {len(rx_dongle)} stations")
+print(f"{'station':>8} {'carrier':>11} {'type':>7} {'audio SNR L':>12}")
+for name, st in zip("ABCD", rx_dongle):
+    snr = fit_snr_db(st["audio"][:, 0], PROGRAMS[name][0], skip=7200)[0]
+    print(f"{name:>8} {st['offset'] / 1e3:8.1f} kHz {'stereo' if st['stereo'] else 'mono':>7} {snr:9.1f} dB")
+    assert abs(st["offset"] - (STATIONS[name] - STATIONS["C"] + 2.5e3)) < 1500     # the carriers, from the new centre
+    assert snr > 15
+assert len(rx_dongle) == 4 and [st["stereo"] for st in rx_dongle] == [True, False, True, False]
+```
+
+The same four stations come out, now found on the other grid. A is the one that suffers
+most: it sits 400 kHz from the new centre, near the edge of the captured band, and the
+resampling filter cuts a little of its outer sideband, which biases its carrier estimate by
+a fraction of a kilohertz and lowers its audio SNR.
+
+### Real recordings
+
+The receiver has been run on real recordings as well. @fmradiosamples publishes
+recordings made in Sydney with a USB dongle, as 8-bit I/Q at 1.024 MS/s, each centred
+on a station. The book is built offline and the recordings carry broadcast programmes,
+so we do not distribute them and the build does not run this section; to
+reproduce it, download one, extract the `.pcm` file and run
+
+```python
+raw = np.fromfile("fm_95_3MHz_1024kHz.pcm", dtype=np.uint8, count=2 * int(1.5 * 1_024_000))   # 1.5 s
+stations = fm_receiver(raw, rate=1_024_000, centres=np.arange(-400e3, 401e3, 200e3))
+```
+
+with the functions of this chapter. We ran it on the first 1.5 s of two of them
+(95.3 and 92.9 MHz). The dial scan finds one station in each, at the centre, since
+the neighbouring channels are empty or too weak:
+
+| Recording | Carrier found | CNR in 180 kHz | Pilot over its surroundings | Pilot amplitude | Correlation of L and R |
+|---|---|---|---|---|---|
+| 95.3 MHz | $+1.04$ kHz | 24.6 dB | 38.0 dB (stereo) | 0.088 | 0.84 |
+| 92.9 MHz | $+0.06$ kHz | 31.5 dB | 44.6 dB (stereo) | 0.079 | 0.98 |
+
+What we can say about them is structural, because we have no transmitted signal to compare with and
+the build cannot play them. The receiver recognises both as stereo, and its loop locks
+on the pilot. The amplitude of the pilot, 8 to 9 % of the full deviation, is what a
+broadcast station uses. The spectrum of the composite signal of the first one has the structure of
+@fig-mpx, with the mono baseband and its sharp cut at 15 kHz, the pilot, the difference
+signal around 38 kHz and, which we did not simulate, the two lobes of the data
+subcarrier of the **RDS** system at 57 kHz (Exercise 4). The second one is a
+programme of classical music, almost mono, and the two channels come out
+correlated at 0.98. And a real recording differs from ours in ways that are good
+to know about:
+
+- the carrier estimate of the dial scan, a centroid, was off by about a kilohertz in the first
+  recording, since real spectra are not symmetric; the mean of the discriminator
+  shows it and the automatic frequency control removes it;
+- the dongle's gain was low: the converter used only 28 of its 256 levels;
+- the tuner has other imperfections that we did not model: weak spurious lines, and
+  two converters that are not perfectly matched, so that a strong station has a faint
+  *image* on the other side of the spectrum (the I/Q imbalance, Exercise 5);
+- a strong station next to a faint one overloads the converter, and the gain of
+  the tuner has to be adjusted;
+- the antenna decides how many stations there are, and the grid depends on the country.
+
+The structure of the receiver, though, is the one that we have built.
+
+### A second opinion
+
+Without a transmitted signal to compare with, there is a way to gain confidence in a receiver:
+to write a *second* receiver, differently, and compare the two. If both are right, they
+agree; if one has a mistake, it is unlikely that the other has the same one. The second
+receiver below is different on purpose. It works at the rate of the recording (decimating
+by 4 from there, not resampling to 960 kS/s), designs the channel filter by the Remez
+exchange algorithm instead of a Kaiser window, recovers the frequency by unwrapping the phase and
+differentiating it instead of the conjugate product, and regenerates the subcarrier without a
+loop, from the analytic signal of the pilot (the method of Exercise 1), filtering with
+zero-phase Butterworth filters. It handles stereo stations only, and it uses the same de-emphasis as the
+first one, so that the comparison is about everything else.
+
+```{python}
+def independent_receiver(raw_bytes, rate, f_guess):
+    """A second stereo receiver, written differently: see the text. Returns audio at 48 kHz, shape (n, 2)."""
+    x = bytes_to_iq(raw_bytes)
+    x = x - np.mean(x)
+    z = x * np.exp(-2j * np.pi * f_guess * np.arange(len(x)) / rate)                       # tune to the guess; the mean of the
+    taps = signal.remez(201, [0, 90e3, 110e3, rate / 2], [1, 0], fs=rate, weight=[1, 30])    # discriminator removes the rest
+    z = signal.upfirdn(taps, z, up=1, down=4)[25:]                                            # filter, decimate, undo the delay
+    rate_c = rate / 4
+    f_inst = np.diff(np.unwrap(np.angle(z))) * rate_c / (2 * np.pi)                          # unwrap and differentiate
+    m = (f_inst - np.mean(f_inst)) / 75e3                                                     # the composite signal
+    band = signal.butter(4, [18.5e3, 19.5e3], btype="bandpass", fs=rate_c, output="sos")
+    analytic = signal.hilbert(signal.sosfiltfilt(band, m))                                   # the pilot is A sin(theta)
+    sub = np.imag((1j * analytic / np.abs(analytic)) ** 2)                                    # sin(2 theta), without a loop
+    low = signal.butter(8, 15e3, fs=rate_c, output="sos")
+    M = signal.sosfiltfilt(low, m) / 0.9
+    D = signal.sosfiltfilt(low, 2 * m * sub) / 0.9
+    ratio = Fraction(fs_audio, int(rate_c)).limit_denominator(1000)
+    channels = [signal.resample_poly(ch, ratio.numerator, ratio.denominator) for ch in (M + D, M - D)]
+    return np.column_stack([de_emphasis(ch, fs_audio) for ch in channels])
+
+def agreement_db(a, b):
+    """How well two receivers' audio agree above 50 Hz (below it, the slow drift of the tuner dominates),
+    after aligning them and trimming the ends, where the zero-phase filters have transients."""
+    high = signal.butter(4, 50, btype="highpass", fs=fs_audio, output="sos")
+    a, b = signal.sosfiltfilt(high, a), signal.sosfiltfilt(high, b)
+    return fit_snr_db(a[:-7200], b[:-7200], skip=7200)[0]
+
+print(f"{'station':>8} {'second receiver vs truth':>25} {'first receiver vs truth':>24} {'they agree to':>14}")
+for name, index in (("A", 0), ("C", 2)):
+    second = independent_receiver(raw, fs_rf, STATIONS[name])
+    first = stations_rx[index]["audio"]
+    truth = PROGRAMS[name][0]
+    snr_2, snr_1 = fit_snr_db(second[:, 0], truth, skip=7200)[0], fit_snr_db(first[:, 0], truth, skip=7200)[0]
+    agree = agreement_db(second[:, 0], first[:, 0])
+    print(f"{name:>8} {snr_2:22.1f} dB {snr_1:21.1f} dB {agree:11.1f} dB")
+    assert snr_2 > 25 and snr_1 > 25                              # both are right, against the truth ...
+    assert agree > 35                                             # ... and they agree with each other more closely
+```
+
+On the synthetic capture both receivers are 35 dB or so from the truth, and they
+agree with each other much more closely than that: their remaining errors are, to a large part, the same
+ones (the distortion of the channel and the noise that both receive). On the real
+recordings of the previous section we ran the same experiment (the second receiver
+at 1.024 MS/s, centred): the two receivers agree to 43 and 48 dB in the left, right and mono signals
+above 50 Hz, with a correlation of 1.0000, and to 36 and 26 dB in the stereo difference, which is
+the weakest and noisiest signal (the second recording is almost mono). It is the stereo
+difference that depends most on the pilot, and the two receivers
+regenerate the subcarrier in different ways, so this is the strongest evidence that we have
+that the stereo decoding is right on real signals. The agreement is of the same order as the change in the first
+receiver's own output when its channel filter is widened or narrowed by 10 kHz (41 to 61 dB in the
+left channel of these recordings), which is what real recordings are most sensitive to. It does not prove that the audio sounds well, that is, that
+the music is clean: for that one has to listen to it. A spectrogram of the received
+audio shows what one expects from speech and music (bands of formants, harmonics, and the bursts around 8 kHz of the
+sibilants) and not noise, but the book cannot show it, since it is produced from a recording that the build does not have.
+
+## Summary {#sec-sdr-summary}
+
+- Digital processing replaces analog circuits because it is **repeatable**, **flexible**,
+  allows operations that circuits cannot do and does not accumulate noise. A
+  software-defined radio pushes the converter towards the antenna; what stays analog
+  is the antenna, the filter, the amplifier, the mixer and the converter itself.
+- Information travels on a **carrier** because of the size of the antennas and to share
+  the spectrum. **FM** writes the message on the instantaneous frequency,
+  $f_i = f_c + k_fm(t)$; the spectrum of a tone is made of lines $J_n(\beta)$
+  (@prp-fm-tone), and Carson's band contains more than 98 % of the power.
+- The **complex envelope** $I + jQ$ of a radio signal is what a software radio samples
+  (@prp-quadrature-mixer): about a hundred times fewer samples than the radio-frequency
+  signal. The **discriminator** recovers the frequency from the phase difference of
+  consecutive samples, exactly and without depending on the amplitude (@prp-discriminator).
+- A broadcast **stereo** signal is a **composite**: $(L+R)/2$ at baseband, a pilot at
+  19 kHz and $(L-R)/2$ on a 38 kHz subcarrier (@prp-composite). The receiver finds the stations
+  on the grid, tunes with a complex mixer (@prp-shift), selects the channel with a
+  Kaiser filter before decimating (the neighbours are rejected by more than 60 dB,
+  against 0 dB without the filter), demodulates, regenerates the subcarrier with a
+  **phase-locked loop**, and separates the channels; the crosstalk caused by a phase error
+  $\varepsilon$ is $\tan^2(\varepsilon/2)$ (@prp-stereo-phase).
+- The noise of an FM receiver grows like $f^2$, so the output SNR is
+  $3\beta^2P_m\mathrm{CNR}_W$ above the **threshold** and collapses below it; the
+  de-emphasis reduces the noise by about 9 dB, and stereo is about 16 dB noisier than mono.
+
+## Exercises {#sec-sdr-exercises}
+
+1. **Regenerating the subcarrier without a loop.** Replace the PLL by the analytic signal of
+   the pilot (`scipy.signal.hilbert`): if $p = A\sin\theta$ then its analytic signal is
+   $-jAe^{j\theta}$ and the square of its unit-modulus version has the phase $2\theta$. Compare
+   the stereo separation of the two methods at carrier-to-noise ratios of 35 dB and
+   20 dB. Which one is better in noise, and which one could run in real time?
+2. **Cost of the channel filter.** Count the multiplications per second of the
+   channel filter of Stage 4 (177 taps, polyphase, 240 000 outputs/s). Design a cascade of two stages,
+   decimating by 2 each (the first filter is much easier, because the neighbours
+   fold less), and compare the total. What happens if you use three stages?
+3. **Another continent.** With a time constant of 75 µs (the Americas) instead of 50 µs,
+   what is the gain of the pre-emphasis at 15 kHz, and how much does the noise reduction of the de-emphasis change?
+   What would the music of a European station sound like if the receiver used 75 µs?
+   Measure the difference of the spectra.
+4. **RDS.** Many stations send data at 1187.5 bits per second on a subcarrier at 57 kHz
+   (three times the pilot), as BPSK. Add one to `composite` with random bits,
+   regenerate the 57 kHz from the PLL of the pilot, demodulate it with the matched filter of
+   @sec-modem and measure the error rate.
+5. **I/Q imbalance.** Make the Q channel of the capture 5 % stronger and 3° out of phase.
+   Show that the spectrum acquires an image of every station mirrored around zero,
+   measure its level, and correct it by estimating the two parameters from the
+   moments of $I$ and $Q$.
+6. **Tolerance to the tuner's error.** Increase `lo_error` in `capture` from 2.5 kHz to 30 kHz.
+   At which error does the dial scan fail to find the stations, and at which does the
+   channel filter start cutting the signal? What can the AFC do?
+7. **Blending.** Implement a stereo blend that, as the carrier-to-noise ratio falls
+   (estimated from the noise at 60–100 kHz of the composite signal), mixes $\hat L$ and
+   $\hat R$ towards $M$. At which ratio would you start? Compare the noise at 15 dB
+   with and without it.
+8. **A real recording.** Run the receiver on one of the public recordings of
+   @sec-sdr-real, or on one of your own, made with an RTL-SDR dongle and the `rtl_sdr`
+   utility at 960 kS/s or at another rate. Try 4 s instead of 1.5 s. Does the
+   pilot stay locked? Listen to the result and compare it with a normal radio.
+9. **AM.** Add an AM station to the capture (@fig-am-fm) and demodulate it with an
+   envelope detector, $|z[n]|$. What is its output SNR as a function of the
+   carrier-to-noise ratio, and where is the threshold?

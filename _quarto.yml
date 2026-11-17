@@ -43,6 +43,7 @@ book:
       chapters:
         - chapters/14-software-modem.qmd
         - chapters/15-digital-pedalboard.qmd
+        - chapters/16-software-defined-radio.qmd
     - references.qmd
   appendices:
     - appendices/running-the-code.qmd

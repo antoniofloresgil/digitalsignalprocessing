@@ -162,7 +162,7 @@
   the squares exceed $2^{31}$, which CPython (64-bit) hides; found by running
   every cell of the appendix in Pyodide. Use `dtype=float` for such sums.
 
-## 2026-11-17: chapter 15 (digital pedalboard) and the planned SDR annex
+## 2026-11-17: chapter 15 (digital pedalboard)
 
 - **Chapter 15, "Project: A Digital Pedalboard"**, goes in Part V next to the
   modem. It follows four stages (generate, show, process, output) around one
@@ -210,11 +210,101 @@
   which works in build-time cells and in the editable Pyodide cells alike. The
   PDF shows waveforms and spectrograms instead (audio cells are
   `content-visible when-format="html"`).
-- **Planned, not started: a software-defined radio annex** (simulated FM
-  broadcast at IQ baseband: mixing, multi-stage decimation, FM demodulation,
-  de-emphasis, audio out), deeper than the chapter projects, to be written once
-  chapter 15 is finished. Its references are already in `references.bib`
-  (@mitola1995, @reed2002, @collins2018, @rice2009, @harris2004, @crochiere1983,
-  @hogenauer1981, @carson1922, @haykin2009, @lyons2011, @itu450). The entries
-  were written from memory and must be checked against the sources before the
-  annex is published.
+## 2026-11-17: software-defined radio chapter
+
+- **It is chapter 16, the last of Part V** (`chapters/16-software-defined-radio.qmd`;
+  it was first written as Appendix E and moved by the author's decision after seeing
+  the book), a project larger than the two before it, which
+  tells the story of a receiver from antenna to loudspeaker. It starts with the
+  trend of digitising everything (repeatability, flexibility, functions that
+  circuits cannot give, no noise accumulation, cost, testing; each backed by a
+  small experiment where it can be) and what is left analog in an SDR.
+- **Project**: a stereo FM broadcast receiver. There is no antenna, so the
+  appendix *synthesises what a dongle delivers*: four stations at 98.0-98.6 MHz
+  offsets (-300, -100, +100, +300 kHz from the tuner centre), carrier amplitudes
+  1, 0.5, 0.8, 0.12, white noise (35 dB carrier-to-noise for the strongest in its
+  200 kHz channel), a 2.5 kHz tuner error and an 8-bit converter, stored as
+  interleaved unsigned bytes like a real RTL-SDR file, so that a real recording
+  can replace it.
+- **Rates**: 48 kHz audio, 240 kHz composite and modulator, 960 kHz capture. All
+  ratios are integers (x5, x4), so the receiver decimates by 4 and then by 5.
+- **Simulation level**: the complex envelope (I/Q), not the 100 MHz passband. The
+  equivalence is proved (quadrature mixer proposition) and checked on a
+  scaled-down radio (100 kHz carrier, 800 kHz rate).
+- **Theory included and proved**: FM of a tone has lines $J_n(\beta)$
+  (Jacobi-Anger via Fourier coefficients) and Carson's rule is *tested*, not
+  claimed (more than 98 % of the power in $|n| \le \beta + 1$); the quadrature
+  mixer; the discriminator is exact and amplitude-independent; the composite
+  signal is bounded by 1 ($|a+b| + |a-b| = 2\max(|a|,|b|)$).
+- **Pre-emphasis** is the exact inverse of a one-pole de-emphasis
+  ($a = e^{-1/(\tau F_s)}$), a two-tap FIR, because the bilinear transform puts a
+  pole at Nyquist when inverted. At 15 kHz it gives 12.2 dB against 13.7 dB of
+  the analog curve.
+- **Pyodide pitfall**: `scipy.signal.welch` fails with "array is too big" for
+  signals of more than about 10^5 samples (32-bit array sizes in `as_strided`),
+  while `spectrogram` on the same sizes in chapter 15 worked. The appendix has its
+  own `welch_psd` (a loop over segments), checked against SciPy on a short signal.
+- **Receiver design (stages 2-9).** Dial scan on the 200 kHz grid (power per
+  channel against the noise floor measured beyond 410 kHz), carrier by the
+  centroid of the channel power re-centred three times (error below 50 Hz, which
+  also measures the tuner's 2.5 kHz error); complex-mixer tuning; Kaiser channel
+  filter 90/110 kHz, 60 dB, 177 taps, polyphase decimation by 4 (adjacent-channel
+  rejection about 67-69 dB against 0 or -3 dB for naive decimation); discriminator;
+  pilot detection by power ratio; second-order PLL (50 Hz, zeta 0.707) on the
+  band-passed pilot; coherent demodulation of the 38 kHz difference signal;
+  decimation by 5; exact de-emphasis. `fm_receiver(bytes)` is the whole receiver.
+- **Why a dial scan and not peak picking**: the faint station D is a shoulder on
+  the skirt of C in the sliding-window power profile, with no local maximum, so a
+  peak finder misses it; measuring the power of each channel of the grid does not.
+- **Results proved or measured**: stereo crosstalk against pilot phase error is
+  $\tan^2(\varepsilon/2)$ (proved, measured within 0.3 dB for 15-60 degrees);
+  the output SNR of the discriminator is $3\beta^2 P_m\,\mathrm{CNR}_W$ above a
+  threshold of about 12 dB (stated as a first-order derivation, not a theorem, and
+  verified: within 0.1 dB above the threshold, collapsing below it); the noise
+  spectrum slope is 1.97 (expected 2); the de-emphasis gain is 9.39 dB measured
+  against 9.56 predicted; stereo is 16.0 dB noisier than mono against 16.2
+  predicted.
+- **The SNR of the strong stations is capped near 37 dB by distortion, not by
+  noise or by the 8-bit converter**: a noise-free single station gives 37.0 dB
+  with the 90/110 kHz channel filter and 49.0 dB with a 140/170 kHz one. It is
+  the selectivity-fidelity trade-off, and the appendix shows it. (The 8-bit
+  quantisation was checked and changes the audio SNR by less than 0.1 dB.)
+- **Real recordings (stage 9).** The receiver was run on two public recordings
+  (williamyang98/FM-Radio, release `sample_data`: 8-bit I/Q at 1.024 MS/s from a
+  dongle in Sydney, MIT-licensed repository; 95.3 and 92.9 MHz, first 1.5 s each,
+  downloaded on 2026-11-17 into the scratchpad, never into the repository because
+  they are broadcast programmes and 17-209 MB). Result: one station each at the
+  tuner centre, stereo, pilot amplitude 0.088 and 0.079, L/R correlation 0.84 and
+  0.98, RDS visible at 57 kHz. The checks are structural (no ground truth, nobody
+  listened to the audio). The build runs offline, so this section is a static
+  listing plus a table, stated as not run by the build; what *is* run is a
+  simulated recording at 1.024 MS/s tuned on station C, which exercises the same
+  code path (`to_receiver_rate`: DC removal and 15/16 resampling; the dial-scan
+  grid as a parameter).
+- **A second receiver as the check on real data** (`independent_receiver`, in the
+  chapter): native rate with decimation by 4, Remez channel filter, unwrapped-phase
+  discriminator, Hilbert-transform subcarrier (no PLL), zero-phase Butterworth
+  filters; stereo only. On the synthetic capture both receivers are 35-36 dB from the
+  truth and agree to 48-54 dB (asserted, runnable). On the real recordings (static
+  text) they agree to 43-48 dB in L, R and mono and to 36 and 26 dB in the stereo
+  difference. The agreement measure must trim **both** ends of the signal (the first
+  version trimmed only the start and the zero-phase filter transients at the end made
+  two correct receivers look 15-30 dB apart) and compares only above 50 Hz (the
+  tuner's slow drift dominates below). The sensitivity of the real recordings to the
+  channel filter width (41-61 dB self-agreement for a 10 kHz change) is the
+  yardstick for what "agree" means. An audio spectrogram of the real recordings
+  looks like speech/music, but it cannot be a figure of the book (figures come from
+  code, and the build has no recording), so it is only mentioned.
+- **Robust noise floor.** The dial scan measures the floor as the quietest 100 kHz
+  of the PSD, not the band edges: a real band has stations at its edges.
+- **Not done**: a real-time implementation; RDS and AM are exercises.
+- **Cost in the browser**: every cell passes in Pyodide; the slowest (the whole
+  receiver, with its dependencies re-run) takes about 11 s, the rest under 7 s.
+  The HTML page is about 4 MB because of the embedded audio.
+
+- **Software-defined radio project**: first planned as an annex, then written as
+  chapter 16 (see the entry "software-defined radio chapter" below). Its
+  references are in `references.bib` (@mitola1995, @reed2002, @collins2018,
+  @rice2009, @harris2004, @crochiere1983, @hogenauer1981, @carson1922, @haykin2009,
+  @lyons2011, @itu450); the entries were written from memory and must be checked
+  against the sources before publication.
