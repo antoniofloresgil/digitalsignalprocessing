@@ -1,0 +1,1315 @@
+# Project: A Digital Pedalboard {#sec-pedalboard}
+
+The modem of @sec-modem moves bits. This second project moves *music*: it
+builds, entirely in software, the whole path that a guitar signal follows from
+the string to the loudspeaker. We **generate** the sound of a plucked string,
+**show** it in time and frequency, **analyse** it with a pitch tuner, **process**
+it with a chain of effects (an equaliser, a distortion, a reverberation and an
+octave-and-fifth "harmonizer") and finally **output** it: normalised, quantised
+to 16 bits, interpolated to the rate of a sound card and written as a WAV file
+that you can play in the HTML edition of this book.
+
+One idea ties the stages together. A pedal is only correct if it does what it
+promises, and the way to find out is to *measure* it. The pitch tuner of the
+third stage is therefore also the measuring instrument of the fourth: the
+equaliser must not detune the notes, the harmonizer must move them by exactly the
+interval it claims, and the distortion must not fill the spectrum with aliases.
+Each effect ends with a numerical check of this kind. Almost every chapter of the
+book appears: sinusoids and the DFT (@sec-complex-numbers, @sec-dft), windows
+and spectrograms (@sec-spectral-analysis), difference equations, poles and
+filters (@sec-lti, @sec-z-transform, @sec-filter-design), noise and estimation
+(@sec-noise), interpolation and fractional delays (@sec-sampling), quantisation
+(@sec-quantization) and multirate processing (@sec-multirate). The plucked-string
+model is the one of @karplus1983 and @jaffe1983; for a broad view of digital
+audio effects see @zolzer2011, and for the physics of musical instruments
+@smith2010pasp.
+
+By the end of the chapter you should be able to:
+
+- model a vibrating string as a feedback filter, tune it exactly with an
+  all-pass fractional delay and prove that it is stable;
+- display a note as a waveform, a spectrum and a spectrogram and explain what the
+  window length trades;
+- build a pitch tuner from the autocorrelation and a periodogram refinement, and
+  compare its accuracy with the Cramér–Rao bound;
+- design a peaking equaliser, a distortion without aliasing, a Schroeder reverb
+  with a prescribed decay time and a pitch shifter, and measure each of them;
+- quantise the result to a given number of bits with and without dither,
+  interpolate it to a higher sampling rate and write it as an audio file.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Setup: imports, constants and the audio players of the HTML edition"
+import io, base64, wave
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal, optimize
+
+rng = np.random.default_rng(15)
+plt.rcParams["figure.figsize"] = (7, 3)
+plt.rcParams["axes.grid"] = True
+plt.rcParams["grid.alpha"] = 0.3
+
+fs = 24000                      # sampling rate of the whole chain, in Hz
+
+def midi_to_hz(m):
+    """Frequency of MIDI note m (69 is the A of 440 Hz, twelve notes per octave)."""
+    return 440.0 * 2.0 ** ((np.asarray(m, dtype=float) - 69) / 12)
+
+def cents(f, f_ref):
+    """Distance between two frequencies in cents (hundredths of an equal-tempered semitone)."""
+    return 1200 * np.log2(f / f_ref)
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+def note_name(m):
+    return f"{NOTE_NAMES[int(m) % 12]}{int(m) // 12 - 1}"
+
+def wav_base64(x, rate):
+    """16-bit mono WAV file of x (floats in [-1, 1]), as a base64 string."""
+    pcm = np.round(np.clip(x, -1, 1) * 32767).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+    return base64.b64encode(buf.getvalue()).decode()
+
+class Clips:
+    """Labelled audio players, shown in the HTML edition (the same trick as the GIF animations)."""
+    def __init__(self, clips, rate=fs, download=None):
+        parts = []
+        for label, x in clips.items():
+            data = f"data:audio/wav;base64,{wav_base64(x, rate)}"
+            link = f' <a download="{download}" href="{data}">save as {download}</a>' if download else ""
+            parts.append(f'<div style="margin:0.4em 0"><div style="font-size:0.9em">{label}{link}</div>'
+                         f'<audio controls preload="none" src="{data}"></audio></div>')
+        self.html = "".join(parts)
+
+    def _repr_html_(self):
+        return self.html
+```
+
+## The plan {#sec-pedalboard-plan}
+
+Five stages, one signal. We work at $F_s = 24$ kHz, so that every cell runs
+quickly in the browser and the final step to the 48 kHz of a sound card is an
+exact factor of two.
+
+| Stage | Question | Tools |
+|---|---|---|
+| **1. Generate** | What is the simplest filter whose impulse response sounds like a string? | difference equations, poles, all-pass filters |
+| **2. Show** | What does a note look like? | DFT, windows, spectrogram |
+| **3. Analyse** | Which note is it, and how well tuned? | autocorrelation, periodogram, estimation |
+| **4. Process** | What does each effect do, and is it right? | filters, non-linearities, multirate |
+| **5. Output** | How do we hand it to a sound card? | quantisation, dither, interpolation |
+
+## Stage 1: generating a plucked string {#sec-pedalboard-string}
+
+### A string is a delay line with a leak
+
+Pluck a string and a disturbance travels along it, reflects at the ends, and
+comes back: after one round trip the string repeats itself, which is why it has
+a pitch. Each round trip loses some energy, mostly in the high frequencies, which
+is why the sound dies away and gets duller. Digitally, a **delay line** of $D$
+samples stores the round trip, and a **loss filter** closes the loop:
+$$
+y[n] = x[n] + g\,\frac{y[n-D] + y[n-D-1]}{2}.
+$$
+The input $x[n]$ is the pluck, a short burst that fills the delay line (below it
+will be a triangle, which is the shape of a string lifted by a pick, plus a little
+noise); the average of two
+neighbouring samples is a low-pass filter, because
+$\tfrac12(1 + e^{-j\omega}) = e^{-j\omega/2}\cos(\omega/2)$ attenuates high
+frequencies; and $0 < g < 1$ is the loss. This is the algorithm of
+@karplus1983. Its flaw is tuning. The loop delays the signal by $D + \tfrac12$
+samples (the averaging filter adds half a sample), so the pitch can only be
+$F_s/(D + \tfrac12)$, a grid that is far too coarse: at 220 Hz the neighbouring
+values differ by about 2 Hz, or 16 cents. We need a delay of *any* real length,
+and for that we use an all-pass filter (@sec-sampling, @sec-z-transform).
+
+::: {#prp-allpass-delay}
+## An all-pass filter with a prescribed delay
+
+Let $0 < \delta$ and $0 < \omega_0$ with $(1 + \delta)\,\omega_0 < \pi$, and put
+$$
+a = \frac{\sin\big((1 - \delta)\omega_0/2\big)}{\sin\big((1 + \delta)\omega_0/2\big)},
+\qquad
+A(z) = \frac{a + z^{-1}}{1 + a\,z^{-1}}.
+$$
+Then (a) $|a| < 1$, so that $A$ is causal and stable; (b)
+$|A(e^{j\omega})| = 1$ for every $\omega$; (c)
+$A(e^{j\omega_0}) = e^{-j\omega_0\delta}$: at $\omega_0$ the filter delays by
+*exactly* $\delta$ samples; and (d) $|a + w| \le |1 + a\,w|$ for every complex $w$
+with $|w| \le 1$.
+:::
+
+::: {.proof}
+(a) Both $(1 - \delta)\omega_0/2$ and $(1 + \delta)\omega_0/2$ lie in
+$(-\pi/2, \pi/2)$, where the sine is increasing, and
+$|1 - \delta| < 1 + \delta$ because $\delta > 0$. Hence
+$|\sin((1 - \delta)\omega_0/2)| < \sin((1 + \delta)\omega_0/2)$, which is
+$|a| < 1$; the pole $-a$ is inside the unit circle.
+
+(d) Expand both squared moduli:
+$|1 + aw|^2 - |a + w|^2 = (1 + a^2|w|^2) - (a^2 + |w|^2) = (1 - a^2)(1 - |w|^2)$,
+which is non-negative when $|a| < 1$ and $|w| \le 1$.
+
+(b) For $|w| = 1$, (d) holds with equality in both directions (apply it to $w$
+and to $\bar w$), so $|A| = |a + w|/|1 + aw| = 1$ with $w = e^{-j\omega}$.
+
+(c) Put $w = e^{-j\omega_0}$. The identity $A(e^{j\omega_0}) = e^{-j\omega_0\delta}$
+means $a + w = e^{-j\omega_0\delta}(1 + a\,w)$, that is,
+$a\,(1 - e^{-j\omega_0(1+\delta)}) = e^{-j\omega_0\delta} - e^{-j\omega_0}$.
+With $1 - e^{-j\theta} = 2j\sin(\theta/2)\,e^{-j\theta/2}$ the left side is
+$2j\,a\sin\big((1+\delta)\tfrac{\omega_0}{2}\big)\,e^{-j\omega_0(1+\delta)/2}$ and the
+right side is $2j\sin\big((1-\delta)\tfrac{\omega_0}{2}\big)\,e^{-j\omega_0(1+\delta)/2}$.
+They are equal exactly for the value of $a$ in the statement.
+:::
+
+The delay of the all-pass filter equals $\delta$ at *one* frequency; at the others
+it differs slightly. We tune it at the fundamental frequency of the note, and
+will see in a moment what happens at the harmonics.
+
+### The digital string
+
+Put the three pieces in the loop: a delay of $D$ samples, the two-point average
+and the all-pass filter. With
+$$
+L(z) = g\,z^{-D}\,\frac{1 + z^{-1}}{2}\,\frac{a + z^{-1}}{1 + a\,z^{-1}},
+\qquad
+H(z) = \frac{1}{1 - L(z)},
+$$
+the string is the system with transfer function $H$ driven by the pluck. If the
+note has frequency $f_0$, the loop must delay by $F_s/f_0$ samples:
+$D + \tfrac12 + \delta = F_s/f_0$. We choose $D$ so that $\delta \in [0.5, 1.5)$
+and compute $a$ from @prp-allpass-delay with $\omega_0 = 2\pi f_0/F_s$.
+
+::: {#prp-string}
+## The digital string
+
+Let $0 < g < 1$, $|a| < 1$ and $D \ge 1$ an integer. Then:
+
+a. **Stability.** All the poles of $H$ have modulus less than 1.
+b. **Resonances.** For every $\omega$,
+   $|H(e^{j\omega})| \le 1/(1 - g|\cos(\omega/2)|)$, with equality if and only
+   if $L(e^{j\omega})$ is a non-negative real number.
+c. **Tuning.** If $\delta \ge 0$ and $a$ are those of @prp-allpass-delay and
+   $D + \tfrac12 + \delta = F_s/f_0$, then $L(e^{j\omega_0}) = g\cos(\omega_0/2) > 0$
+   at $\omega_0 = 2\pi f_0/F_s$, so $\omega_0$ is a resonance of $H$.
+:::
+
+::: {.proof}
+(a) Multiplying numerator and denominator of $H$ by $2(1 + a z^{-1})$, the poles
+are the roots in $z$ of
+$$
+P(z) = 2(1 + a z^{-1}) - g\,z^{-D}(1 + z^{-1})(a + z^{-1}).
+$$
+Suppose $|z| \ge 1$ and put $w = z^{-1}$, so $|w| \le 1$. By @prp-allpass-delay(d),
+$|g\,w^{D}(1 + w)(a + w)| \le g\cdot 1\cdot 2\cdot|1 + aw|$, which is strictly
+smaller than $2|1 + aw|$ because $g < 1$ and $1 + aw \ne 0$ (as $|aw| < 1$).
+Hence $|P(z)| > 0$: there are no roots with $|z| \ge 1$.
+
+(b) $|1 - L| \ge 1 - |L|$ with equality if and only if $L \ge 0$ (the triangle
+inequality), and $|L| = g|\cos(\omega/2)|$ because the delay and the all-pass
+filter have modulus 1.
+
+(c) By the factorisation $(1 + e^{-j\omega})/2 = e^{-j\omega/2}\cos(\omega/2)$ and
+@prp-allpass-delay(c),
+$L(e^{j\omega_0}) = g\cos(\omega_0/2)\,e^{-j\omega_0(D + 1/2 + \delta)} = g\cos(\omega_0/2)\,e^{-2\pi j}$.
+:::
+
+The proposition says where the string resonates but not how fast each resonance
+dies. To first order, going once around the loop multiplies the $k$-th harmonic
+by $g\cos(\pi k f_0/F_s)$ (the modulus of $L$ at $k\omega_0$), and one trip lasts
+one period, so after $t$ seconds the amplitude of that harmonic has been
+multiplied by $\big(g\cos(\pi k f_0/F_s)\big)^{t f_0}$. The factor $\cos$ is smaller for
+larger $k$: the high harmonics die first, and the note mellows as it decays, as
+a real string does. To obtain a prescribed decay time $T_{60}$ for the
+fundamental, that is, an amplitude that falls by 60 dB in $T_{60}$ seconds, we need
+$\big(g\cos(\pi f_0/F_s)\big)^{T_{60}f_0} = 10^{-3}$. There is a limit: even with
+$g$ close to 1, the averaging filter alone costs a factor $\cos(\pi f_0/F_s)$ per
+period, so a high note cannot ring longer than
+$3/\big(-f_0\log_{10}\cos(\pi f_0/F_s)\big)$ seconds; the code below caps $g$ at 0.9995 and
+the highest note of the table below rings for less than the requested 2 s.
+
+```{python}
+def string_filter(f0, t60=2.0):
+    """Coefficients (b, den) of H(z) in powers of z^-1, and D, for a string of pitch f0 (Hz)."""
+    total = fs / f0                                   # round trip in samples
+    D = int(np.floor(total - 1.0))                    # integer part: leaves delta in [0.5, 1.5)
+    delta = total - 0.5 - D                           # delay left for the all-pass filter
+    w0 = 2 * np.pi * f0 / fs
+    a = np.sin((1 - delta) * w0 / 2) / np.sin((1 + delta) * w0 / 2)   # @prp-allpass-delay
+    g = 10 ** (-3 / (t60 * f0)) / np.cos(np.pi * f0 / fs)             # T60 of the fundamental
+    g = min(g, 0.9995)                                # a high note cannot ring for t60: see the text
+    den = np.zeros(D + 3)
+    den[0], den[1] = 2.0, 2 * a                       # 2(1 + a z^-1)
+    den[D:D + 3] -= g * np.convolve([1, 1], [a, 1])   # - g z^-D (1 + z^-1)(a + z^-1)
+    return np.array([2.0, 2 * a]), den, D, g
+
+def pluck(f0, dur=1.5, t60=2.0, beta=0.15, rng=rng):
+    """One plucked note, normalised to peak 1: the string driven by a triangular pluck, whose apex
+    is at the fraction beta of the line, plus a little noise for the attack."""
+    b, den, D, g = string_filter(f0, t60)
+    n = D + 2
+    apex = max(int(beta * n), 1)
+    triangle = np.r_[np.linspace(0, 1, apex, endpoint=False), np.linspace(1, 0, n - apex)]
+    shape = triangle + 0.15 * rng.uniform(-1, 1, n)
+    x = np.zeros(int(dur * fs))
+    x[:n] = shape - shape.mean()                      # zero mean: no DC in the string
+    y = signal.lfilter(b, den, x)
+    return y / np.max(np.abs(y))
+
+print(f"{'note':>6} {'f0 [Hz]':>8} {'D':>4} {'g':>7} {'poles inside':>13} {'tuning with all-pass':>22} {'integer delay only':>20}")
+for m in (45, 57, 64, 69, 81):                        # A2, A3, E4, A4, A5
+    f0 = midi_to_hz(m)
+    b, den, D, g = string_filter(f0)
+    poles = np.roots(den)
+    near = poles[np.argmin(np.abs(np.angle(poles) * fs / (2 * np.pi) - f0))]
+    err_allpass = cents(np.angle(near) * fs / (2 * np.pi), f0)
+    f_int = fs / (round(fs / f0 - 0.5) + 0.5)         # pitch with the best integer delay
+    err_int = cents(f_int, f0)
+    print(f"{note_name(m):>6} {f0:8.2f} {D:4d} {g:7.5f} {np.abs(poles).max():13.5f} {err_allpass:19.4f} ct {err_int:17.2f} ct")
+    assert np.abs(poles).max() < 1                    # @prp-string (a)
+    assert abs(err_allpass) < 0.01                    # tuned to a hundredth of a cent
+```
+
+The pole of the string closest to the unit circle sits at the requested pitch to
+a hundredth of a cent or better, whereas the plain Karplus–Strong string, with an
+integer delay only, is off by up to several cents. A trained ear notices
+differences of a few cents between two notes sounding together.
+
+We now check the decay law of the harmonics. The poles near $k\omega_0$ are the
+harmonics of the string; the modulus of such a pole raised to the number of
+samples in a period is the factor by which that harmonic shrinks per period.
+
+```{python}
+f0 = midi_to_hz(57)                                   # A3, 220 Hz
+b, den, D, g = string_filter(f0)
+poles = np.roots(den)
+T0 = fs / f0                                          # samples per period
+print(f"{'k':>3} {'measured per period':>20} {'g cos(pi k f0/Fs)':>19}")
+for k in range(1, 9):
+    p = poles[np.argmin(np.abs(np.angle(poles) * fs / (2 * np.pi) - k * f0))]
+    measured, predicted = np.abs(p) ** T0, g * np.cos(np.pi * k * f0 / fs)
+    print(f"{k:3d} {measured:20.5f} {predicted:19.5f}")
+    assert abs(measured - predicted) < 2e-4
+```
+
+The first-order law is accurate to four decimals. Compare the first and the last rows: the eighth harmonic loses several times more
+amplitude per period than the first, and therefore dies much sooner.
+
+### A melody and a chord
+
+To have something to process we play the first nine notes of a very well-known
+tune, each plucked every 0.3 s, and end with a C major chord whose three strings
+are struck a few milliseconds apart, like a strum.
+
+```{python}
+SCORE = [(64, 0), (64, 1), (65, 2), (67, 3), (67, 4), (65, 5), (64, 6), (62, 7), (60, 8)]  # (MIDI note, beat)
+BEAT = int(0.30 * fs)                                 # a note every 0.3 s
+
+def melody(rng, t60=1.2):
+    """The nine notes of SCORE, one pluck per beat, with a slightly different loudness each.
+    The strings ring for about 1.2 s: long enough to sound like a guitar, short enough for the
+    tail of a note not to disturb the tuner when the next one is analysed."""
+    out = np.zeros(len(SCORE) * BEAT + int(2.0 * fs))
+    for m, beat in SCORE:
+        note = pluck(midi_to_hz(m), dur=1.8, t60=t60, rng=rng)
+        out[beat * BEAT:beat * BEAT + len(note)] += rng.uniform(0.7, 1.0) * note
+    return out / np.max(np.abs(out))
+
+def strum(rng, notes=(48, 52, 55), gap=0.035, t60=2.5):
+    """A chord: the notes are plucked `gap` seconds apart."""
+    out = np.zeros(int(2.5 * fs))
+    for i, m in enumerate(notes):
+        note = pluck(midi_to_hz(m), dur=2.3, t60=t60, rng=rng)
+        out[int(i * gap * fs):int(i * gap * fs) + len(note)] += note
+    return out / np.max(np.abs(out))
+
+dry = melody(rng)
+chord = strum(rng)
+print(f"melody: {len(dry) / fs:.1f} s, chord: {len(chord) / fs:.1f} s")
+assert np.max(np.abs(dry)) == 1.0 and np.all(np.isfinite(dry)) and np.all(np.isfinite(chord))
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"A single plucked string, A3 (220 Hz)": pluck(220.0, dur=2.0, rng=rng),
+       "The melody": dry,
+       "The chord": chord})
+```
+
+Press play. The strings are very simple, a handful of multiplications per
+sample, yet the pluck, the mellowing and the slow decay are those of a guitar.
+You can edit the code above (`t60`, the score, the pitch) and run it again.
+:::
+
+## Stage 2: showing the note {#sec-pedalboard-show}
+
+@fig-pedal-note shows one note in both domains. The waveform (left) starts as
+the triangle of the pluck with some noise on top and settles into a periodic pattern
+that decays;
+the spectrum (right) is a **comb** of lines at the multiples of $f_0$, each
+broadened by its own decay rate. The dashed curve is $|H(e^{j\omega})|$, computed
+from the filter: the measured lines have its peaks, as they must, since the note is
+$H$ applied to the pluck, whose spectrum is smooth.
+
+```{python}
+#| label: fig-pedal-note
+#| fig-cap: "One plucked string of 220 Hz. Left: the first 40 ms of the waveform, in which the pluck settles into a periodic pattern. Right: its spectrum (solid, Hann window) and the magnitude response of the string filter (dashed, shifted down for readability); the vertical lines mark the multiples of $f_0$."
+f0 = 220.0
+note = pluck(f0, dur=1.5, rng=rng)
+t = np.arange(len(note)) / fs
+b, den, D, g = string_filter(f0)
+
+N_fft = 1 << 17
+X = np.abs(np.fft.rfft(note * np.hanning(len(note)), N_fft))
+freqs = np.fft.rfftfreq(N_fft, 1 / fs)
+w_h, H = signal.freqz(b, den, worN=2 * np.pi * freqs / fs)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.4, 3.2), gridspec_kw={"width_ratios": [1, 1.3]})
+ax1.plot(t[:int(0.04 * fs)] * 1e3, note[:int(0.04 * fs)], lw=1)
+ax1.set(xlabel="time [ms]", title="waveform")
+ax2.plot(freqs / 1e3, 20 * np.log10(X / X.max() + 1e-9), lw=0.8, label="measured")
+ax2.plot(freqs / 1e3, 20 * np.log10(np.abs(H) / np.abs(H).max()) - 25, "--", lw=0.8, label="$|H|$, shifted")
+for k in range(1, 55):
+    ax2.axvline(k * f0 / 1e3, color="0.6", lw=0.3)
+ax2.set(xlim=(0, 6), ylim=(-100, 5), xlabel="frequency [kHz]", ylabel="dB", title="spectrum")
+ax2.legend(fontsize=8, loc="upper right")
+plt.tight_layout()
+plt.show()
+
+for k in range(1, 9):                                 # the lines sit at the harmonics, to a few cents
+    window = (freqs > k * f0 * 0.98) & (freqs < k * f0 * 1.02)
+    peak = freqs[window][np.argmax(X[window])]
+    assert abs(cents(peak, k * f0)) < 3, (k, cents(peak, k * f0))
+```
+
+### The spectrogram and the window
+
+A melody is not stationary, so a single DFT is not enough: the **spectrogram**
+slides a window along the signal and shows the spectrum of each position
+(@sec-spectral-analysis). The window length decides the trade. A window of $N$
+samples with a Hann taper resolves frequencies separated by about
+$F_s/N \times 1.44$ Hz (the width of the main lobe at $-3$ dB) and locates events
+in time to within about $N/F_s$ seconds. @fig-pedal-spectrogram shows the same melody
+with $N = 256$ and $N = 2048$.
+
+```{python}
+#| label: fig-pedal-spectrogram
+#| fig-cap: "Spectrogram of the melody with a short window (left, 256 samples = 10.7 ms) and a long one (right, 2048 samples = 85 ms). The short window locates each pluck in time but smears the harmonics; the long window separates the harmonics but smears the attacks."
+fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.2), sharey=True)
+for ax, nper in zip(axes, (256, 2048)):
+    f_s, t_s, Sxx = signal.spectrogram(dry, fs, window="hann", nperseg=nper, noverlap=nper * 7 // 8)
+    ax.pcolormesh(t_s, f_s / 1e3, 10 * np.log10(Sxx + 1e-12), vmin=-110, vmax=-30, shading="auto", rasterized=True)
+    ax.set(ylim=(0, 5), xlabel="time [s]", title=f"{nper} samples")
+axes[0].set_ylabel("frequency [kHz]")
+plt.tight_layout()
+plt.show()
+
+def half_power_width(nper, pad=64):
+    """-3 dB width, in Hz, of the spectral line of a pure tone seen through a Hann window."""
+    n = np.arange(nper)
+    tone = np.cos(2 * np.pi * (fs / 8) * n / fs)                       # a tone at fs/8
+    S = np.abs(np.fft.rfft(tone * np.hanning(nper), nper * pad))
+    above = np.flatnonzero(S >= S.max() / np.sqrt(2))
+    return (above[-1] - above[0]) * fs / (nper * pad)
+
+for nper in (256, 2048):
+    w = half_power_width(nper)
+    print(f"N = {nper:4d}: -3 dB width {w:6.1f} Hz   (1.44 Fs/N = {1.44 * fs / nper:6.1f} Hz)")
+    assert abs(w / (1.44 * fs / nper) - 1) < 0.03
+```
+
+To tell the two strings of a chord apart, say C3 and E3, which are 34 Hz apart,
+the window must be much longer than the short one: $1.44F_s/N \lesssim 34$ Hz
+needs $N \gtrsim 1000$ samples. A semitone around 110 Hz, which is 6.5 Hz,
+needs $N \gtrsim 5300$, more than 0.2 s. This is why polyphonic pitch detection
+is hard, and why our tuner will be a *monophonic* one (one note at a time); see
+Exercise 3.
+
+## Stage 3: the tuner {#sec-pedalboard-tuner}
+
+A tuner reports the pitch of a note as a note name and the number of **cents**
+by which it is sharp or flat: $c = 1200\log_2(f/f_{\text{ref}})$, where
+$f_{\text{ref}}$ is the equal-tempered frequency of the nearest note. We build it
+in two steps: a coarse estimate from the autocorrelation, which is robust, and a
+fine one from the periodogram, which is accurate.
+
+### Coarse estimate: the autocorrelation
+
+A periodic signal is similar to itself shifted by one period, so the
+autocorrelation $r[m] = \sum_nx[n]\,x[n+m]$ has a peak at $m$ equal to the period.
+
+::: {#prp-autocorr}
+## The autocorrelation peaks at the period
+
+Let $x$ be $P$-periodic and not identically zero and let
+$r[m] = \sum_{n=0}^{P-1}x[n]\,x[(n + m) \bmod P]$. Then $|r[m]| \le r[0]$ for all
+$m$, and $r[m] = r[0]$ if and only if $x[(n + m) \bmod P] = x[n]$ for all $n$,
+in particular for $m = 0, P, 2P, \dots$
+:::
+
+::: {.proof}
+By the Cauchy–Schwarz inequality (@sec-signals-as-vectors) applied to the
+vectors $(x[n])_n$ and $(x[(n + m) \bmod P])_n$, which have the same norm,
+$|r[m]| \le r[0]$, with equality if and only if the two vectors are proportional,
+and with equal norms and a positive inner product, equal.
+:::
+
+The proposition is for exactly periodic signals; a plucked string only
+approximately is (it decays, and its harmonics are not exactly in tune), but the
+peak is still where we expect it. We pick the **first** high maximum, not the highest, in the range of lags of the
+notes we expect (60 to 1000 Hz), since $r$ also peaks at $2P, 3P, \dots$ with almost
+the same height; by "high" we mean at least 90 % of the highest peak. We refine it by the vertex of the parabola through three points, which is exact if the peak is
+a parabola and a very good approximation otherwise.
+
+```{python}
+def autocorr_f0(x, fmin=60.0, fmax=1000.0):
+    """Coarse pitch estimate (Hz): first peak of the autocorrelation, refined by a parabola."""
+    N = len(x)
+    r = np.fft.irfft(np.abs(np.fft.rfft(x, 2 * N)) ** 2)[:N]          # linear autocorrelation by FFT
+    r = r / r[0]
+    k = np.arange(int(fs / fmax), int(fs / fmin))
+    peaks = k[(r[k] > r[k - 1]) & (r[k] >= r[k + 1])]
+    m = peaks[r[peaks] > 0.9 * r[peaks].max()][0]                    # first of the high peaks
+    y0, y1, y2 = r[m - 1], r[m], r[m + 1]
+    return fs / (m + 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2))
+
+frame = note[2000:2000 + 4096]
+f_coarse = autocorr_f0(frame)
+print(f"autocorrelation: {f_coarse:.3f} Hz, {cents(f_coarse, 220.0):+.2f} cents")
+assert abs(cents(f_coarse, 220.0)) < 5
+```
+
+### Fine estimate: the periodogram
+
+For a sinusoid in white Gaussian noise, the maximum-likelihood estimate of the
+frequency is the position of the maximum of the **periodogram**
+$|\sum_nx[n]\,e^{-j\omega n}|^2$ [@rife1974]. We evaluate it by maximising over a
+narrow interval around the coarse estimate (a 1-D search, no zero-padding needed).
+A note is not a sinusoid but a sum of harmonics, and the fundamental is often not
+the strongest of them (after a distortion, it is rarely so). The tuner therefore
+refines the **strongest of the first eight harmonics**, near $kf_c$, and divides the
+result by $k$: a relative error is the same for the harmonic and for the
+fundamental, and the strongest line has the best signal-to-noise ratio.
+How good can any estimator be? For $N$ samples of $A\cos(\omega_0n + \varphi) + w[n]$
+with white noise of variance $\sigma^2$ and unknown amplitude and phase, no unbiased
+estimator has variance below the **Cramér–Rao bound** (@sec-noise,
+@rife1974, @kay1993):
+$$
+\operatorname{var}(\hat\omega_0) \;\ge\; \frac{12}{\eta\,N(N^2 - 1)},
+\qquad \eta = \frac{A^2}{2\sigma^2}.
+$$
+The bound shrinks like $N^{-3}$: a longer frame sharpens the estimate much faster
+than a quieter noise would. We state it without proof, as it needs the theory of
+the Fisher information; its derivation is in the references. We check it by a
+Monte Carlo experiment.
+
+```{python}
+def refine(x, f, width_cents=25.0, window=True):
+    """Maximise the (windowed) periodogram of x around f, within +-width_cents. Returns Hz."""
+    n = np.arange(len(x))
+    w = np.hanning(len(x)) if window else np.ones(len(x))
+    cost = lambda ff: -np.abs(np.sum(w * x * np.exp(-2j * np.pi * ff * n / fs)))
+    lo, hi = f * 2 ** (-width_cents / 1200), f * 2 ** (width_cents / 1200)
+    return optimize.minimize_scalar(cost, bounds=(lo, hi), method="bounded", options={"xatol": 1e-7}).x
+
+def tune(x, n_harmonics=8):
+    """The tuner (Hz): coarse autocorrelation estimate, then periodogram refinement on the
+    strongest of the first harmonics, divided by its number."""
+    f_c = autocorr_f0(x)
+    n = np.arange(len(x)); w = np.hanning(len(x))
+    line = lambda f: np.abs(np.sum(w * x * np.exp(-2j * np.pi * f * n / fs)))
+    ks = [k for k in range(1, n_harmonics + 1) if k * f_c < 0.45 * fs]
+    k_best = ks[int(np.argmax([line(k * f_c) for k in ks]))]
+    return refine(x, k_best * f_c) / k_best
+
+f_fine = tune(frame)
+print(f"after refinement: {f_fine:.4f} Hz, {cents(f_fine, 220.0):+.3f} cents")
+assert abs(cents(f_fine, 220.0)) < 1.0
+
+# Monte Carlo: a pure tone in white noise, rectangular window, against the Cramér-Rao bound.
+N, f_true, A, trials = 4096, 1000.3, 1.0, 200
+n = np.arange(N)
+rows = []
+for snr_db in (-10, -5, 0, 10, 20):
+    eta = 10 ** (snr_db / 10)                         # eta = A^2 / (2 sigma^2)
+    sigma = A / np.sqrt(2 * eta)
+    errors = []
+    for _ in range(trials):
+        x = A * np.cos(2 * np.pi * f_true * n / fs + rng.uniform(0, 2 * np.pi)) + rng.normal(0, sigma, N)
+        k = np.argmax(np.abs(np.fft.rfft(x, 4 * N)))      # coarse: peak of the zero-padded DFT
+        errors.append(refine(x, k * fs / (4 * N), width_cents=3.0, window=False) - f_true)
+    bound = np.sqrt(12 / (eta * N * (N ** 2 - 1))) * fs / (2 * np.pi)       # in Hz
+    rows.append((snr_db, np.std(errors), bound))
+    print(f"SNR {snr_db:4d} dB: std {np.std(errors):.5f} Hz, bound {bound:.5f} Hz, ratio {np.std(errors) / bound:.2f}")
+    assert 0.6 < np.std(errors) / bound < 1.5         # a ratio of 1 +- the Monte Carlo spread (about 5 %)
+```
+
+The standard deviation of the refined estimate equals the bound, within the 5 %
+spread of a 200-trial Monte Carlo experiment, from $-10$ dB to 20 dB (a noise
+ten times stronger than the tone). At 20 dB the error is of the order of a hundredth
+of a cent at 1 kHz. The tuner is limited by physics and statistics, not by its
+algorithm.
+
+### The tuner on a melody: onsets
+
+To tune a melody we need to know where each note starts. A simple **onset
+detector** looks at the part of the signal above 1.5 kHz, where the sharp attack of a
+pluck stands out and the tails of the previous notes are weak (in the whole signal,
+neighbouring notes beat against each other and make the energy fluctuate). It
+measures the energy of 10 ms frames in dB and flags a frame when the energy has risen
+by more than 6 dB over the last 50 ms, provided that it is not far below the loudest
+frame and that the previous onset was more than 100 ms ago. We then tune the 170 ms
+that follow, skipping the first 30 ms, where the pluck is still settling.
+
+```{python}
+def detect_onsets(x, fc=1500.0, frame_ms=10.0, rise_db=6.0, floor_db=30.0, refractory_ms=100.0):
+    """Sample indices of the note attacks. The energy of 10 ms frames of the signal above `fc` is
+    measured in dB, and a frame is an onset if that energy has risen by more than `rise_db` over
+    the last 50 ms, to a level less than `floor_db` below the loudest frame, and the previous
+    onset is more than `refractory_ms` earlier."""
+    high = signal.sosfilt(signal.butter(4, fc, "highpass", fs=fs, output="sos"), x)
+    L = int(frame_ms * 1e-3 * fs)
+    e = 10 * np.log10(np.sum(high[:len(high) // L * L].reshape(-1, L) ** 2, axis=1) + 1e-12)
+    padded = np.r_[np.full(5, -120.0), e]                           # silence before the signal
+    rising = (padded[5:] - padded[:-5] > rise_db) & (e > e.max() - floor_db)
+    onsets = []
+    for i in np.flatnonzero(rising):
+        if not onsets or (i - onsets[-1]) * L > refractory_ms * 1e-3 * fs:
+            onsets.append(i)
+    return np.array(onsets) * L
+
+def read_notes(x, onsets=None, skip=0.03, length=4096):
+    """Run the tuner after every onset: a list of (onset in s, f in Hz, MIDI note, cents off)."""
+    out = []
+    for s in (detect_onsets(x) if onsets is None else onsets):
+        start = s + int(skip * fs)
+        f = tune(x[start:start + length])
+        m = int(np.round(69 + 12 * np.log2(f / 440.0)))
+        out.append((s / fs, f, m, cents(f, midi_to_hz(m))))
+    return out
+
+heard = read_notes(dry)
+print(f"{'onset':>7} {'f [Hz]':>9} {'note':>5} {'cents':>7}   played")
+for (t_on, f, m, c), (m_true, beat) in zip(heard, SCORE):
+    print(f"{t_on:6.2f}s {f:9.3f} {note_name(m):>5} {c:+7.3f}   {note_name(m_true)}")
+assert len(heard) == len(SCORE)
+assert [h[2] for h in heard] == [m for m, _ in SCORE]
+assert max(abs(h[3]) for h in heard) < 1.0
+```
+
+The tuner recovers all nine notes, with errors below a cent. We will use it as a
+measuring instrument for the rest of the chapter. First, a sanity check with a
+string that we *detune on purpose*: the tuner should read the detuning.
+
+```{python}
+for detune in (-30, -10, 0, 7, 25):                   # cents
+    f_target = 220.0 * 2 ** (detune / 1200)
+    x_det = pluck(f_target, dur=1.0, rng=rng)
+    f_read = tune(x_det[2000:2000 + 4096])
+    print(f"detuned by {detune:+3d} ct -> the tuner reads {cents(f_read, 220.0):+7.3f} ct")
+    assert abs(cents(f_read, 220.0) - detune) < 0.5
+```
+
+## Stage 4: the pedals {#sec-pedalboard-pedals}
+
+### An equaliser
+
+A **peaking equaliser** boosts or cuts a band around a centre frequency $f_c$,
+leaving the rest of the spectrum alone. Its transfer function is a ratio of two
+second-order polynomials with the same centre frequency and slightly different
+bandwidths: where the numerator "wins" the gain exceeds 1, where the denominator
+wins it is below 1. With $A = 10^{G/40}$ for a gain of $G$ dB, $\omega_c = 2\pi f_c/F_s$
+and $\alpha = \sin\omega_c/(2Q)$, one common form is [@bristowjohnson]
+$$
+H_{\mathrm{eq}}(z) = \frac{(1 + \alpha A) - 2\cos\omega_c\,z^{-1} + (1 - \alpha A)\,z^{-2}}
+{(1 + \alpha/A) - 2\cos\omega_c\,z^{-1} + (1 - \alpha/A)\,z^{-2}}.
+$$
+The parameter $Q$ controls the bandwidth: the larger, the narrower.
+
+::: {#prp-peaking}
+## The peaking equaliser
+
+For $0 < \omega_c < \pi$, $A > 0$ and $\alpha > 0$, the filter $H_{\mathrm{eq}}$ is
+stable and satisfies $H_{\mathrm{eq}}(1) = H_{\mathrm{eq}}(-1) = 1$ (unit gain at
+DC and at the Nyquist frequency) and $|H_{\mathrm{eq}}(e^{j\omega_c})| = A^2$, that
+is, a gain of exactly $G$ dB at the centre.
+:::
+
+::: {.proof}
+Stability: the denominator $d_0 + d_1z^{-1} + d_2z^{-2}$ has $d_0 = 1 + \alpha/A$,
+$d_1 = -2\cos\omega_c$, $d_2 = 1 - \alpha/A$. A second-order polynomial has its
+roots inside the unit circle if and only if $|d_2/d_0| < 1$ and
+$|d_1| < d_0 + d_2$ (the Jury conditions of @sec-z-transform). Here
+$|d_2/d_0| = |1 - \alpha/A|/(1 + \alpha/A) < 1$ and $d_0 + d_2 = 2 > 2|\cos\omega_c| = |d_1|$.
+
+At $z = 1$ both polynomials equal $2 - 2\cos\omega_c$, and at $z = -1$ both equal
+$2 + 2\cos\omega_c$ (the terms in $\alpha$ cancel), so the ratio is 1. At
+$z = e^{j\omega_c}$, multiply the numerator by $e^{j\omega_c}$:
+$(1 + \alpha A)e^{j\omega_c} - 2\cos\omega_c + (1 - \alpha A)e^{-j\omega_c}
+= 2j\alpha A\sin\omega_c$, because the real parts $2\cos\omega_c$ cancel. The
+denominator gives $2j(\alpha/A)\sin\omega_c$. The ratio is $A^2$.
+:::
+
+```{python}
+#| label: fig-pedal-eq
+#| fig-cap: "Magnitude response of the peaking equaliser at 2 kHz for gains of +9, -9 dB with $Q = 2$, and +9 dB with $Q = 6$. At the centre the gain is exactly the requested one; far from it, the filter is transparent."
+def peaking_eq(fc, gain_db, Q):
+    """Coefficients (b, a) of the peaking equaliser of @prp-peaking."""
+    A = 10 ** (gain_db / 40)
+    w = 2 * np.pi * fc / fs
+    alpha = np.sin(w) / (2 * Q)
+    b = np.array([1 + alpha * A, -2 * np.cos(w), 1 - alpha * A])
+    a = np.array([1 + alpha / A, -2 * np.cos(w), 1 - alpha / A])
+    return b / a[0], a / a[0]
+
+fig, ax = plt.subplots(figsize=(7, 3))
+for gain, Q, ls in ((9, 2, "-"), (-9, 2, "-"), (9, 6, "--")):
+    b_eq, a_eq = peaking_eq(2000.0, gain, Q)
+    w_, h_ = signal.freqz(b_eq, a_eq, worN=4096, fs=fs)
+    ax.plot(w_ / 1e3, 20 * np.log10(np.abs(h_)), ls, label=f"{gain:+d} dB, Q = {Q}")
+    centre = np.abs(signal.freqz(b_eq, a_eq, worN=[2000.0], fs=fs)[1][0])
+    assert abs(20 * np.log10(centre) - gain) < 1e-9
+    assert np.all(np.abs(np.roots(a_eq)) < 1)
+ax.set(xlabel="frequency [kHz]", ylabel="gain [dB]", xlim=(0, 12))
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+How does the equaliser change a note? The note has a line at each harmonic, and
+by linearity each line is multiplied by $H_{\mathrm{eq}}$ at its frequency. We can
+check this on the whole spectrum: with enough zeros after the note so that the
+filter's tail fits, the DFT of the output must be the DFT of the input times
+the frequency response, bin by bin. And, closing the loop, the tuner must still
+read the same pitch.
+
+```{python}
+b_eq, a_eq = peaking_eq(1980.0, 9.0, 2.0)             # a boost around the 9th harmonic of 220 Hz
+note_pad = np.r_[note, np.zeros(fs)]                   # one second of zeros for the tail
+eq_out = signal.lfilter(b_eq, a_eq, note_pad)
+X, Y = np.fft.rfft(note_pad), np.fft.rfft(eq_out)
+H_bins = signal.freqz(b_eq, a_eq, worN=2 * np.pi * np.arange(len(X)) / len(note_pad))[1]
+strong = np.abs(X) > 1e-3 * np.abs(X).max()
+err = np.max(np.abs(np.abs(Y[strong]) - np.abs(H_bins[strong]) * np.abs(X[strong])) / np.abs(X[strong]))
+print(f"max |Y| - |H||X| over the strong bins: {err:.2e}")
+assert err < 1e-6
+f_eq = tune(eq_out[2000:2000 + 4096])
+print(f"pitch after the equaliser: {cents(f_eq, 220.0):+.3f} ct")
+assert abs(cents(f_eq, 220.0)) < 1.0
+```
+
+### A distortion without aliases
+
+A distortion pedal passes the signal through a **non-linear, memoryless** curve.
+Take the smooth saturation $s(v) = \tanh(\gamma v)$ with a drive $\gamma$: small
+signals are amplified by $\gamma$, large ones are squashed to $\pm1$, and a sine
+becomes a rounded square wave. Unlike a filter, a non-linearity *creates* new
+frequencies. Which ones?
+
+::: {#prp-odd-harmonics}
+## An odd curve creates odd harmonics
+
+Let $s$ be an odd function ($s(-v) = -s(v)$) and let $x[n]$ be periodic with
+period $P$ even and with half-wave symmetry, $x[n + P/2] = -x[n]$ (for instance
+a sine). Then $y[n] = s(x[n])$ has the same symmetry, and therefore its DFT
+over one period has non-zero values only at the *odd* harmonics.
+:::
+
+::: {.proof}
+$y[n + P/2] = s(x[n + P/2]) = s(-x[n]) = -s(x[n]) = -y[n]$. Its DFT over one
+period is $Y[k] = \sum_{n=0}^{P-1}y[n]e^{-2\pi jkn/P}$; splitting the sum into
+$n < P/2$ and $n \ge P/2$ and using $y[n + P/2] = -y[n]$,
+$Y[k] = \sum_{n=0}^{P/2-1}y[n]\,e^{-2\pi jkn/P}\big(1 - e^{-\pi jk}\big)$, which is
+zero for $k$ even.
+:::
+
+The curve $\tanh$ is odd, so a guitar distorted with it keeps the harmonic
+character of the string (odd harmonics sound like a square wave); an asymmetric
+curve, such as the one of a tube amplifier, adds even harmonics too (Exercise 4).
+But the new harmonics bring a second problem. The distorted sine contains
+harmonics of $f_0$ at *all* odd multiples, well beyond $F_s/2$, and a
+sampled signal cannot contain them: they **alias** (@sec-sampling), folding back
+as lines that are not harmonics of $f_0$ at all and sound like inharmonic noise.
+The cure is to raise the sampling rate *before* the non-linearity, so that the
+harmonics have room, and to filter and decimate afterwards: **oversampling**
+(@sec-multirate). We measure it on a sine whose period is exactly an integer
+number of DFT bins, which lets us tell harmonics from aliases by position.
+
+```{python}
+#| label: fig-pedal-alias
+#| fig-cap: "Spectrum of a 1465 Hz sine through $\\tanh(8v)$. Left: computed at 24 kHz. The odd harmonics (dots on the grid of $f_0$) are accompanied by many other lines: aliases. Right: the same curve computed at four times the rate and decimated. The harmonics are the same; the aliases are far lower."
+Ng, m_bin = 1 << 14, 1000                              # f0 = fs * 1000 / 16384: whole number of periods
+f0_tone = fs * m_bin / Ng
+tone = np.sin(2 * np.pi * f0_tone * np.arange(Ng) / fs)
+shaper = lambda v: np.tanh(8 * v)
+
+def alias_fraction_db(y):
+    """Power outside the lines of the true harmonics k * f0 (k * f0 < Fs/2), relative to the total, in dB."""
+    P = np.abs(np.fft.rfft(y)) ** 2
+    keep = np.ones(len(P), bool)
+    keep[:2] = False
+    for k in range(1, Ng // (2 * m_bin) + 1):
+        keep[k * m_bin - 1:k * m_bin + 2] = False        # the true harmonic lines
+    return 10 * np.log10(P[keep].sum() / P.sum())
+
+y_plain = shaper(tone)
+y_over = signal.resample_poly(shaper(signal.resample_poly(tone, 4, 1)), 1, 4)   # 4x rate, then back
+db_plain, db_over = alias_fraction_db(y_plain), alias_fraction_db(y_over)
+print(f"aliases: {db_plain:.1f} dB without oversampling, {db_over:.1f} dB with x4 ({db_plain - db_over:.1f} dB better)")
+assert db_plain - db_over > 15
+
+P_even = np.abs(np.fft.rfft(y_plain))[2 * m_bin:Ng // 2:2 * m_bin]      # even harmonics inside the band
+assert np.all(P_even < 1e-9 * np.abs(np.fft.rfft(y_plain)).max())       # @prp-odd-harmonics
+
+fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.0), sharey=True)
+for ax, y, title in zip(axes, (y_plain, y_over), ("direct", "4x oversampled")):
+    S = 20 * np.log10(np.abs(np.fft.rfft(y)) / Ng + 1e-12)
+    ax.plot(np.fft.rfftfreq(Ng, 1 / fs) / 1e3, S, lw=0.5)
+    ax.plot(np.arange(1, 9, 2) * f0_tone / 1e3, S[np.arange(1, 9, 2) * m_bin], "o", ms=3, color="C3")
+    ax.set(title=title, xlabel="frequency [kHz]", ylim=(-130, 0))
+axes[0].set_ylabel("dB")
+plt.tight_layout()
+plt.show()
+```
+
+Oversampling by 4 reduces the aliases by the number of decibels printed above. It
+cannot eliminate them: a smooth curve like $\tanh$ has harmonics that decay
+geometrically, not abruptly, and the decimation filter has a finite transition
+band. It is a trade between quality and computation, which is the usual one in
+multirate processing. Listen to the difference on the melody: the aliasing of the
+direct version is a metallic "fizz" on the high notes.
+
+```{python}
+def distortion(x, gain=8.0, oversample=4):
+    """tanh(gain * x), computed at `oversample` times the rate when oversample > 1."""
+    if oversample == 1:
+        return np.tanh(gain * x)
+    up = signal.resample_poly(x, oversample, 1)
+    return signal.resample_poly(np.tanh(gain * up), 1, oversample)
+
+dist_plain = distortion(dry, oversample=1)
+dist_over = distortion(dry, oversample=4)
+print(f"peak without oversampling {np.max(np.abs(dist_plain)):.3f}, with oversampling {np.max(np.abs(dist_over)):.3f}")
+assert np.max(np.abs(dist_plain)) <= 1.0                 # tanh never leaves [-1, 1] ...
+assert 1.0 < np.max(np.abs(dist_over)) < 2.0             # ... but the decimation filter rings at the corners
+```
+
+Notice the last line. The curve $\tanh$ never leaves $[-1, 1]$, but after the
+decimation filter the oversampled signal does. The filter removes everything above
+12 kHz from a signal that has nearly square corners, and a band-limited square wave
+overshoots (the Gibbs phenomenon of @sec-spectral-analysis and
+@sec-advanced-proofs). The overshoot is the price of removing the aliases, and it
+is the reason for the normalisation of the output stage, where a signal that
+exceeds full scale would be clipped.
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"Clean": dry, "Distortion, no oversampling": 0.8 * dist_plain,
+       "Distortion, 4x oversampling": 0.8 * dist_over})
+```
+:::
+
+### A reverberation
+
+A room adds to every sound an enormous number of delayed and attenuated copies.
+@schroeder1962 observed that two simple blocks reproduce the effect: **comb
+filters**, which create a train of decaying echoes, and **all-pass filters**,
+which thicken the echoes without changing the colour of the sound. A **feedback
+comb** with delay $M$ is $y[n] = x[n] + g\,y[n - M]$, and a **Schroeder all-pass**
+is $H(z) = (z^{-M} - g)/(1 - g\,z^{-M})$.
+
+::: {#prp-comb}
+## Comb and all-pass filters
+
+Let $M \ge 1$ be an integer and $|g| < 1$.
+
+a. The feedback comb is stable, with impulse response
+   $h[n] = g^{k}$ if $n = kM$ ($k = 0, 1, 2, \dots$) and $h[n] = 0$ otherwise.
+   Its echoes fall by 60 dB in $T_{60}$ seconds if
+   $g = 10^{-3M/(F_sT_{60})}$.
+b. The Schroeder all-pass has $|H(e^{j\omega})| = 1$ for all $\omega$.
+:::
+
+::: {.proof}
+(a) Substitute $x = \delta$: the response repeats every $M$ samples, multiplied
+by $g$ each time, so $h[kM] = g^k$; it is absolutely summable since $|g| < 1$.
+The $k$-th echo arrives at $t = kM/F_s$ with amplitude $g^k$; the amplitude is
+$10^{-3}$ (that is, $-60$ dB) at $t = T_{60}$, for $k = F_sT_{60}/M$, which gives
+$g^{F_sT_{60}/M} = 10^{-3}$.
+
+(b) With $w = e^{-j\omega M}$, $|w| = 1$ and $g$ real,
+$|w - g| = |w|\,|1 - g\bar w| = |1 - g\bar w| = |1 - g w|$, where the last step
+takes the complex conjugate of the number inside the modulus.
+:::
+
+The reverb of @fig-pedal-reverb is four feedback combs in parallel, with
+delays of unrelated lengths so that their echoes do not coincide and fill the
+time axis, followed by two all-pass filters in series. Each comb has its own
+$g$, chosen by @prp-comb(a) so that all of them decay with the same $T_{60}$.
+We measure the decay time of the resulting impulse response with **Schroeder's
+backward integration**: the energy decay curve
+$\mathrm{EDC}[n] = \sum_{k \ge n}h[k]^2$ falls smoothly, and a line fitted to it
+between $-5$ and $-35$ dB gives the time for a 60 dB fall.
+
+```{python}
+#| label: fig-pedal-reverb
+#| fig-cap: "Impulse response of the reverb for a designed decay time of 1.2 s (top) and its energy decay curve in dB (bottom), with the 60 dB line that the design predicts (dashed). The curve is a straight line, as in a diffuse room."
+COMB_DELAYS = [1103, 1171, 1259, 1327]                 # samples; unrelated lengths
+ALLPASS = [(347, 0.7), (113, 0.7)]                     # (delay in samples, g)
+
+def reverb_ir(t60, n):
+    """Impulse response of four parallel feedback combs followed by two Schroeder all-pass filters."""
+    impulse = np.zeros(n); impulse[0] = 1.0
+    wet = np.zeros(n)
+    for M in COMB_DELAYS:
+        den = np.zeros(M + 1); den[0] = 1.0; den[M] = -10 ** (-3 * M / (fs * t60))   # @prp-comb (a)
+        wet += signal.lfilter([1.0], den, impulse)
+    for M, g_ap in ALLPASS:
+        num = np.zeros(M + 1); num[0] = -g_ap; num[M] = 1.0
+        den = np.zeros(M + 1); den[0] = 1.0; den[M] = -g_ap
+        wet = signal.lfilter(num, den, wet)
+    return wet / len(COMB_DELAYS)
+
+def measured_t60(h):
+    """Decay time from Schroeder's backward integration: slope fitted between -5 and -35 dB."""
+    edc = np.cumsum(h[::-1] ** 2)[::-1]
+    edc_db = 10 * np.log10(edc / edc[0])
+    t_ = np.arange(len(h)) / fs
+    i1, i2 = np.argmax(edc_db < -5), np.argmax(edc_db < -35)
+    return -60 / np.polyfit(t_[i1:i2], edc_db[i1:i2], 1)[0], edc_db
+
+for t60_design in (0.6, 1.2, 2.0):
+    h = reverb_ir(t60_design, int(4 * fs))
+    t60_meas, _ = measured_t60(h)
+    print(f"designed T60 {t60_design:.1f} s -> measured {t60_meas:.3f} s")
+    assert abs(t60_meas / t60_design - 1) < 0.10
+
+h = reverb_ir(1.2, int(3 * fs))
+_, edc_db = measured_t60(h)
+t_ = np.arange(len(h)) / fs
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 3.6), sharex=True)
+ax1.plot(t_, h, lw=0.6)
+ax1.set(ylabel="$h[n]$")
+ax2.plot(t_, edc_db, label="EDC")
+ax2.plot(t_, -60 * t_ / 1.2, "--", label="designed: $-60$ dB per 1.2 s")
+ax2.set(xlabel="time [s]", ylabel="dB", ylim=(-70, 3))
+ax2.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+The decay times come out within a few per cent of the design values. The reverb
+is applied by convolving the dry sound with this impulse response (equivalently,
+by running the combs and all-pass filters) and mixing the result with the dry
+sound; the all-pass filters do not change the magnitude of the response, so the
+reverb adds echoes without altering the tone.
+
+```{python}
+def reverb(x, t60=1.2, mix=0.25):
+    """Dry signal plus `mix` times the reverberated signal."""
+    h = reverb_ir(t60, int(3 * fs))
+    wet = signal.fftconvolve(x, h)[:len(x)]
+    return (1 - mix) * x + mix * wet * np.max(np.abs(x)) / np.max(np.abs(wet))
+
+wet_melody = reverb(dry, t60=1.2, mix=0.4)
+assert wet_melody.shape == dry.shape
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"Dry": dry, "With reverb, T60 = 1.2 s": wet_melody})
+```
+:::
+
+### A harmonizer: changing the pitch without changing the speed
+
+A **harmonizer** adds a copy of the melody a fixed interval higher. We cannot
+just replay the signal faster: that raises the pitch but also shortens the
+notes, as with a tape played too fast. Playing a sampled signal at the rate $\rho$
+means resampling it by $\rho$ (@sec-multirate): every frequency is multiplied by
+$\rho$ and the duration is divided by $\rho$. To keep the duration we have to
+**stretch the signal in time** by $\rho$ without changing its pitch.
+
+The simplest way to stretch is to cut the signal into overlapping frames of $N$
+samples, taken every $H_a$ samples, and to paste them back with overlap
+every $H_s = \rho H_a$ samples, windowed so that the overlaps add up to one. If
+$H_a$ and $H_s$ differ, the frames meet at the wrong phase, and a periodic
+signal sounds rough: the overlap of two cosines out of phase cancels. The
+fix of @verhelst1993 is **WSOLA** (*waveform-similarity overlap-add*): each frame
+is taken not exactly at its nominal position but within $\pm\tau$ samples of it, at
+the position whose beginning best continues the previous frame, found by
+cross-correlation. We pitch-shift by an interval $p/q$ by combining resampling by
+$p/q$ with a WSOLA stretch by $p/q$; a fifth up is $3/2$ (1.9 cents above the
+equal-tempered $2^{7/12}$), an octave down is $1/2$.
+
+```{python}
+def wsola(x, stretch, N=1024, tol=256):
+    """Time-stretch x by the factor `stretch` (> 1 is longer) without changing its pitch."""
+    Hs = N // 4                                        # synthesis hop
+    Ha = Hs / stretch                                  # analysis hop
+    w = np.hanning(N)
+    n_frames = int((len(x) - N - tol) / Ha)
+    out, norm = np.zeros(n_frames * Hs + N), np.zeros(n_frames * Hs + N)
+    prev = 0
+    for m in range(n_frames):
+        nominal = int(round(m * Ha))
+        if m == 0:
+            start = nominal
+        else:
+            target = x[prev + Hs:prev + Hs + N]        # what would naturally follow the last frame
+            lo, hi = max(nominal - tol, 0), min(nominal + tol, len(x) - N)
+            start = lo + int(np.argmax(signal.correlate(x[lo:hi + N], target, mode="valid")))
+        out[m * Hs:m * Hs + N] += x[start:start + N] * w
+        norm[m * Hs:m * Hs + N] += w
+        prev = start
+    norm[norm < 1e-3] = 1.0
+    return out / norm
+
+def pitch_shift(x, up, down, tol=256):
+    """Multiply every frequency by up/down, keeping the duration: resample, then stretch back."""
+    resampled = signal.resample_poly(x, down, up)      # shorter by up/down: pitch up by up/down
+    return wsola(resampled, up / down, tol=max(tol, 1))
+
+def periodicity(x, f0, frame=2048):
+    """Mean over the frames of the best correlation between the frame and itself one period later."""
+    P = int(round(fs / f0))
+    scores = []
+    for s in range(1000, len(x) - frame - P - 8, frame):
+        seg = x[s:s + frame + P + 8]
+        scores.append(max(np.corrcoef(seg[:frame], seg[P + d + 4:P + d + 4 + frame])[0, 1] for d in range(-2, 3)))
+    return np.mean(scores)
+
+print(f"{'f0 [Hz]':>8} {'shift':>6} {'tuner ratio':>12} {'error [ct]':>11} {'periodicity WSOLA':>18} {'plain OLA':>10}")
+cases = [(m, 3, 2) for m in (45, 57, 64)] + [(m, 1, 2) for m in (57, 64, 69)]      # fifths up, octaves down
+p_wsola, p_ola = [], []
+for m, up, down in cases:
+    f0_in = midi_to_hz(m)
+    x_in = pluck(f0_in, dur=1.5, rng=rng)
+    shifted = pitch_shift(x_in, up, down)
+    plain = pitch_shift(x_in, up, down, tol=1)         # no search: ordinary overlap-add
+    ratio = tune(shifted[2000:2000 + 4096]) / f0_in
+    p_w, p_o = periodicity(shifted, f0_in * up / down), periodicity(plain, f0_in * up / down)
+    p_wsola.append(p_w); p_ola.append(p_o)
+    print(f"{f0_in:8.2f} {up}/{down:<4} {ratio:12.5f} {cents(ratio, up / down):11.2f} {p_w:18.3f} {p_o:10.3f}")
+    assert abs(cents(ratio, up / down)) < 5            # the tuner measures the interval
+print(f"mean periodicity: WSOLA {np.mean(p_wsola):.3f}, plain OLA {np.mean(p_ola):.3f}")
+assert np.mean(p_wsola) > np.mean(p_ola) + 0.03        # alignment keeps the waveform coherent
+```
+
+The tuner measures the interval the pedal promises, within a few cents. The
+last assertion is the reason for WSOLA: when the frames are chosen blindly
+(`tol=1`), consecutive frames do not match in phase and the periodic structure of
+the note is partly destroyed, which the *periodicity* (the correlation between a
+frame and itself one period later) reveals. On a single note the blind version
+is sometimes lucky, which is why we compare averages over several pitches. The method works best on a single
+note, as here; on a chord it blurs, and a phase vocoder or other methods do
+better (Exercise 6).
+
+::: {.content-visible when-format="html"}
+```{python}
+fifth_up = pitch_shift(dry, 3, 2)
+octave_down = pitch_shift(dry, 1, 2)
+Clips({"Dry": dry,
+       "A fifth up (3/2)": fifth_up,
+       "An octave down (1/2)": octave_down,
+       "Harmonizer: dry plus fifth up": (dry[:len(fifth_up)] + 0.7 * fifth_up) / 1.7})
+```
+:::
+
+### The whole pedalboard
+
+We now chain the effects: equaliser, distortion, reverb and, optionally, the
+harmonizer. The order matters, as with real pedals: equalising *before* the
+distortion shapes which harmonics are driven hardest, and the reverb goes last, so
+that the tails are not distorted.
+
+```{python}
+def pedalboard(x, eq=(1980.0, 6.0, 1.5), gain=6.0, t60=1.2, mix=0.3, harmony=0.0):
+    """equaliser -> distortion (x4 oversampling) -> reverb -> optional fifth-up harmonizer."""
+    y = x
+    if eq is not None:
+        fc, gain_db, Q = eq
+        y = signal.lfilter(*peaking_eq(fc, gain_db, Q), y)
+    y = distortion(y, gain=gain, oversample=4) / np.tanh(gain)
+    if harmony > 0:
+        shifted = pitch_shift(y, 3, 2)
+        y = y[:len(shifted)] + harmony * shifted
+    return reverb(y, t60=t60, mix=mix)
+
+processed = pedalboard(dry)
+processed_h = pedalboard(dry, harmony=0.7)
+print(f"input peak {np.max(np.abs(dry)):.2f}, output peak {np.max(np.abs(processed)):.2f}")
+assert np.all(np.isfinite(processed)) and np.all(np.isfinite(processed_h))
+```
+
+Does the pedalboard detune the melody? That is the closing test of the first
+four stages. We run the tuner on the processed melody and compare each note with
+the one that was played. The pedals add no delay (the harmonizer is off), so the
+notes start at the same instants as in the dry signal, and we reuse its onsets: after a
+distortion that holds the level of the tails, the attacks are much harder to detect.
+
+```{python}
+onsets = detect_onsets(dry)                            # the pedals add no delay: same onsets
+heard_dry = read_notes(dry, onsets)
+heard_nrv = read_notes(pedalboard(dry, mix=0.0), onsets)   # equaliser and distortion only
+heard_out = read_notes(processed, onsets)              # the whole chain
+print(f"{'note':>5} {'dry [ct]':>9} {'eq + dist [ct]':>15} {'with reverb [ct]':>17}")
+for (_, _, m1, c1), (_, _, m2, c2), (_, _, m3, c3) in zip(heard_dry, heard_nrv, heard_out):
+    print(f"{note_name(m3):>5} {c1:+9.3f} {c2:+15.3f} {c3:+17.3f}")
+for heard in (heard_nrv, heard_out):
+    assert [h[2] for h in heard] == [m for m, _ in SCORE]      # the same notes
+assert max(abs(h[3]) for h in heard_nrv) < 2.0                 # equaliser and distortion do not detune
+assert max(abs(h[3]) for h in heard_out) < 4.0                 # the reverb perturbs the reading a little
+```
+
+All the notes come out of the pedalboard with the pitch they were played: the
+equaliser and the non-linearity change the *timbre* but not the pitch, and the tuner
+reads them within a couple of cents. The reverb leaves the notes right but makes the reading
+somewhat noisier: the analysed frame now contains the echoes of the note
+itself and the tail of the previous one, which are not exactly in phase with it. The
+tuner measures that too. @fig-pedal-chain compares the spectrograms.
+
+```{python}
+#| label: fig-pedal-chain
+#| fig-cap: "Spectrogram of the melody before (left) and after (right) the pedalboard of equaliser, distortion and reverb. The harmonics of each note are still at the same frequencies; the distortion has added harmonics, which extend up the spectrum, and the reverb has smeared the notes in time."
+fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.2), sharey=True)
+for ax, y, title in zip(axes, (dry, processed), ("dry", "after the pedalboard")):
+    f_s, t_s, Sxx = signal.spectrogram(y, fs, window="hann", nperseg=1024, noverlap=896)
+    ax.pcolormesh(t_s, f_s / 1e3, 10 * np.log10(Sxx + 1e-12), vmin=-110, vmax=-30, shading="auto", rasterized=True)
+    ax.set(title=title, xlabel="time [s]", ylim=(0, 8))
+axes[0].set_ylabel("frequency [kHz]")
+plt.tight_layout()
+plt.show()
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"Dry": dry, "Pedalboard": processed, "Pedalboard with harmonizer": processed_h})
+```
+:::
+
+## Stage 5: output {#sec-pedalboard-output}
+
+### Level, quantisation and the 6 dB per bit
+
+A digital-to-analog converter takes integers. The last step before it is to
+bring the signal to the converter's range without clipping, and to round it to the
+available number of bits. We first normalise the peak to $-1$ dBFS (0.891 of
+full scale), which leaves headroom for the interpolation filter of the next
+section, and then round to $b$ bits: with $2^b$ levels spanning $[-1, 1)$ the step
+is $\Delta = 2^{1-b}$ and the rounding error of a busy signal behaves like noise of
+power $\Delta^2/12$ (@sec-quantization). The signal-to-noise ratio then grows by
+$20\log_{10}2 \approx 6.02$ dB for every bit that we add. We measure it on the
+actual output of the pedalboard.
+
+```{python}
+#| label: fig-pedal-snr
+#| fig-cap: "Signal-to-quantisation-noise ratio of the pedalboard output against the number of bits. The measurements (dots) lie on a line of slope close to 6.02 dB per bit (dashed: the best fit)."
+def to_dbfs(x, level_db=-1.0):
+    """Scale x so that its peak is at `level_db` dB below full scale."""
+    return x * 10 ** (level_db / 20) / np.max(np.abs(x))
+
+def quantise(x, bits, dither=None, rng=None):
+    """Round x (in [-1, 1]) to `bits` bits; dither=None or 'tpdf' (triangular, +-Delta, adds one LSB of noise)."""
+    delta = 2.0 ** (1 - bits)
+    u = 0.0
+    if dither == "tpdf":
+        u = rng.uniform(-0.5, 0.5, len(x)) + rng.uniform(-0.5, 0.5, len(x))
+    return delta * np.round(x / delta + u)
+
+out = to_dbfs(processed)
+bit_range = np.arange(6, 15)
+snr = []
+for b_ in bit_range:
+    e = quantise(out, b_) - out
+    snr.append(10 * np.log10(np.sum(out ** 2) / np.sum(e ** 2)))
+slope, intercept = np.polyfit(bit_range, snr, 1)
+print(f"SNR slope: {slope:.2f} dB per bit  (theory 6.02)")
+assert abs(slope - 6.02) < 0.5
+
+fig, ax = plt.subplots(figsize=(7, 3))
+ax.plot(bit_range, snr, "o", label="measured")
+ax.plot(bit_range, slope * bit_range + intercept, "--", label=f"fit, {slope:.2f} dB/bit")
+ax.set(xlabel="bits", ylabel="SNR [dB]")
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+### Dither: keeping what is below the least significant bit
+
+A quiet signal exposes a weakness of rounding. Take the melody 50 dB below
+full scale, so that its peak is less than half a step of an 8-bit converter:
+every sample rounds to zero and the music is *gone*, not even noisy. Adding
+**dither**, a noise of the size of one step before rounding (triangular
+distribution, @lipshitz1992 and @sec-quantization), turns the rounding error
+into signal-independent noise and keeps the music, buried but recoverable,
+since the noise is spread over all frequencies and the tones are not. We check
+both claims. With triangular dither the rounding error has mean zero *whatever
+the signal* and a variance of $\Delta^2/4$ (the $\Delta^2/12$ of the rounding plus
+the $\Delta^2/6$ of the dither), so the output is the music plus independent noise,
+and its correlation with the music must be $\sigma_x/\sqrt{\sigma_x^2 + \Delta^2/4}$,
+where $\sigma_x$ is the standard deviation of the music.
+
+```{python}
+#| label: fig-pedal-dither
+#| fig-cap: "Spectrum of the first 0.3 s of the melody, 50 dB below full scale, after rounding to 8 bits. Without dither the output is silent (its spectrum is zero, far below the bottom of the plot). With triangular dither (blue) the output is a noise floor with the music hidden in it; the dashed lines mark the harmonics of the first note, E4, which hardly rise above the floor: the music is below the noise in each sample, as the correlation measured below shows."
+quiet = to_dbfs(dry, level_db=-50.0)
+bits_q = 8
+delta_q = 2.0 ** (1 - bits_q)
+plain_q = quantise(quiet, bits_q)
+dith_q = quantise(quiet, bits_q, dither="tpdf", rng=np.random.default_rng(1))
+
+print(f"peak of the signal: {np.max(np.abs(quiet)) / delta_q:.2f} steps; "
+      f"samples different from zero without dither: {np.count_nonzero(plain_q)}")
+assert np.max(np.abs(quiet)) < delta_q / 2 and np.count_nonzero(plain_q) == 0
+noise_ratio = np.mean((dith_q - quiet) ** 2) / (delta_q ** 2 / 12)
+print(f"error power with dither: {noise_ratio:.2f} x (Delta^2/12)   (theory: 3)")
+assert 2.7 < noise_ratio < 3.3
+
+seg = slice(0, int(0.3 * fs))
+f_e4 = midi_to_hz(64)
+spec = lambda y: 20 * np.log10(np.abs(np.fft.rfft(y[seg] * np.hanning(len(y[seg])), 1 << 15)) + 1e-12)
+fq = np.fft.rfftfreq(1 << 15, 1 / fs)
+fig, ax = plt.subplots(figsize=(7, 3))
+ax.plot(fq / 1e3, spec(plain_q), color="0.6", lw=0.8, label="no dither")
+ax.plot(fq / 1e3, spec(dith_q), lw=0.8, label="triangular dither")
+for k in range(1, 7):
+    ax.axvline(k * f_e4 / 1e3, color="C3", ls="--", lw=0.5)
+ax.set(xlim=(0, 3), ylim=(-50, 40), xlabel="frequency [kHz]", ylabel="dB")
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+
+# The music is still there: the dithered output is correlated with it, as much as theory says.
+sx = np.std(quiet)
+rho = np.corrcoef(quiet, dith_q)[0, 1]
+rho_theory = sx / np.sqrt(sx ** 2 + delta_q ** 2 / 4)      # the error has mean 0 given x and variance Delta^2/4
+print(f"correlation of the dithered output with the music: {rho:.3f} (theory {rho_theory:.3f}); without dither: silence")
+assert abs(rho - rho_theory) < 0.02
+```
+
+Without dither the converter produces silence; with it, the melody is still there,
+well below the noise in each sample and recoverable from a long enough frame, just
+as the Cramér–Rao bound promised. The price of dither is its
+noise: three times the power of plain rounding noise (4.8 dB), as measured.
+
+### Interpolation and reconstruction
+
+Our signal lives at 24 kHz and the sound card works at 48 kHz, so the last block
+is a **2× interpolator** (@sec-multirate): insert a zero after every sample, which
+creates an image of the spectrum above 12 kHz, and remove it with a low-pass filter
+whose cut-off is at 12 kHz and that gains 2 to compensate for the zeros. The
+converter then holds each value for one period, which multiplies the spectrum by a
+$\operatorname{sinc}$ (a droop of less than 1 dB below 12 kHz at 48 kHz), and its
+analog reconstruction filter removes the images of 48 kHz.
+
+```{python}
+#| label: fig-pedal-out
+#| fig-cap: "Spectrum of the output before (24 kHz, grey) and after (48 kHz, blue) the 2x interpolator. The image of the spectrum above 12 kHz has been suppressed; the transition band of the filter is around 12 kHz."
+final_24k = quantise(to_dbfs(processed_h), 16)         # 16-bit master at 24 kHz
+final_48k = signal.resample_poly(final_24k, 2, 1, window=("kaiser", 9.0))   # zero-stuff, Kaiser low-pass, gain 2
+
+def band_power_db(y, rate, lo, hi):
+    P = np.abs(np.fft.rfft(y)) ** 2
+    f = np.fft.rfftfreq(len(y), 1 / rate)
+    return 10 * np.log10(P[(f >= lo) & (f < hi)].sum() / P.sum() + 1e-30)
+
+image_db = band_power_db(final_48k, 2 * fs, 14e3, 24e3)
+print(f"power between 14 and 24 kHz at 48 kHz: {image_db:.1f} dB (relative to the total)")
+assert image_db < -50
+assert len(final_48k) == 2 * len(final_24k)
+droop_db = 20 * np.log10(np.sinc(10e3 / 48e3))           # np.sinc(x) = sin(pi x) / (pi x)
+print(f"hold droop of the converter at 10 kHz: {droop_db:.2f} dB")
+
+fig, ax = plt.subplots(figsize=(7, 3))
+for y, rate, c, lab in ((final_24k, fs, "0.6", "24 kHz"), (final_48k, 2 * fs, "C0", "48 kHz")):
+    f = np.fft.rfftfreq(len(y), 1 / rate)
+    S = 20 * np.log10(np.abs(np.fft.rfft(y * np.hanning(len(y)))) / len(y) + 1e-12)
+    ax.plot(f / 1e3, S, color=c, lw=0.5, label=lab)
+ax.set(xlabel="frequency [kHz]", ylabel="dB", ylim=(-130, -20))
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+### The file
+
+The output is a 16-bit, 48 kHz WAV file. In the HTML edition the player below
+plays it, and the link saves it.
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"The pedalboard output: 16 bits, 48 kHz": final_48k}, rate=2 * fs, download="pedalboard.wav")
+```
+:::
+
+## Summary {#sec-pedalboard-summary}
+
+- A plucked string is a **delay in a feedback loop with a low-pass filter**.
+  An all-pass filter gives the loop any real delay: with the coefficient of @prp-allpass-delay
+  the pole of the string sits at the requested pitch to a hundredth of a cent, and @prp-string proves that the string is stable, that its
+  resonances are where the loop is a positive real, and that the harmonics decay
+  at different rates.
+- A spectrogram trades time resolution for frequency resolution through the
+  window length; the $-3$ dB width of a line through a Hann window is
+  $1.44F_s/N$.
+- A tuner is an **estimator**: the autocorrelation gives a robust coarse
+  estimate (@prp-autocorr), the periodogram refines it, and the accuracy reaches
+  the **Cramér–Rao bound** $12/(\eta N(N^2 - 1))$.
+- A **peaking equaliser** has gain exactly $A^2$ at its centre (@prp-peaking); a
+  **non-linearity** creates harmonics (odd ones if the curve is odd, see @prp-odd-harmonics)
+  which alias unless the processing is done at an **oversampled** rate; a **Schroeder reverb** has a decay time set by the comb
+  gains (@prp-comb); a **harmonizer** resamples and stretches with WSOLA.
+- Every effect was *measured* with the tuner or with the spectrum, and the whole
+  chain leaves the pitch of the notes unchanged.
+- The output stage normalises, quantises (6.02 dB per bit; **dither** keeps
+  signals below the LSB at the price of three times the noise power),
+  interpolates by two and writes the WAV file.
+
+## Exercises {#sec-pedalboard-exercises}
+
+1. **Pick position.** A triangular pluck with its apex at the fraction $\beta$ of
+   the line has harmonics of amplitude proportional to $|\sin(\pi k\beta)|/k^2$
+   (because its second derivative is two impulses a distance $\beta$ apart), so
+   the harmonics at the multiples of $1/\beta$ vanish. Check it in the spectrum of
+   `pluck` for $\beta = 0.2$ and $\beta = 0.5$ with the noise switched off, and
+   listen to the timbre of $\beta = 0.1$ and $\beta = 0.5$.
+2. **Fractional delay by interpolation.** Replace the all-pass filter by a linear
+   interpolator $\delta$ samples long, $(1 - \delta)z^{-0} + \delta z^{-1}$ with
+   $\delta \in [0, 1)$. How does the tuning error of the string, measured by
+   the poles as in the first experiment, change with $f_0$? Why does the
+   all-pass filter do better at high pitches?
+3. **Chords.** Build a polyphonic tuner with a dictionary of harmonic templates:
+   for every candidate note, a vector with unit lines at its harmonics, smoothed to
+   the width of the window; select notes greedily by matching pursuit
+   (@sec-signals-as-vectors), re-fitting the amplitudes by least squares after each
+   choice. Test it on the chord of the chapter and on other triads. When does it
+   confuse a note with the one an octave above, and how does the overlap of
+   harmonics ($3\times$ C3 and $2\times$ G3 coincide) explain it?
+4. **Tube warmth.** Replace $\tanh(\gamma v)$ by $\tanh(\gamma(v + c))$ with
+   $c = 0.3$ and show with the spectrum that even harmonics appear (what does @prp-odd-harmonics
+   say about the symmetry that was lost?). Remove the DC
+   component that the offset creates with a high-pass filter.
+5. **A duller reverb.** Put a one-pole low-pass filter in the loop of each comb,
+   $y[n] = x[n] + g\,\big(u\,y[n - M] + (1 - u)\,y[n - M - 1]\big)$ (a leaky average
+   again), and measure the decay time of low and high frequencies separately with
+   the backward integration of band-filtered impulse responses. Is it still
+   possible to give a single $T_{60}$?
+6. **Phase vocoder.** Implement a pitch shifter with a short-time Fourier transform:
+   analyse with hop $H_a$, compute for each bin the phase advance beyond the
+   nominal one, accumulate it at the synthesis hop $H_s$ and resynthesise. Compare
+   it with WSOLA on the melody and on the chord with the periodicity measure
+   of the chapter and by ear.
+7. **How long a frame?** At 0 dB SNR, how many samples does a tuner need to read a
+   220 Hz note with a standard deviation of 1 cent, according to the Cramér–Rao
+   bound? Check your answer with the Monte Carlo experiment of the chapter.
+8. **A wah pedal.** Make the peaking equaliser time-varying by moving the centre
+   frequency $f_c$ between 500 Hz and 2.5 kHz with a low-frequency oscillator
+   (changing the coefficients sample by sample, with `lfilter` state `zi` passed
+   from one block to the next). The system is no longer time invariant. Which
+   property of @sec-lti is lost, and what do you see in the spectrogram?

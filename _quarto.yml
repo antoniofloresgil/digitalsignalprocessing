@@ -42,6 +42,7 @@ book:
     - part: "V. Putting It All Together"
       chapters:
         - chapters/14-software-modem.qmd
+        - chapters/15-digital-pedalboard.qmd
     - references.qmd
   appendices:
     - appendices/running-the-code.qmd

@@ -46,8 +46,10 @@ You can work with the code in three ways, from least to most effort:
 Part I treats signals as lists of numbers and as vectors. Part II introduces
 frequency, the central idea of the book. Part III shows how to change signals
 with filters. Part IV connects the digital world with the analog one. Part V
-puts everything together in a software modem that sends bits through a
-simulated telephone line.
+puts everything together in two projects: a software modem that sends bits
+through a simulated telephone line (@sec-modem), and a digital pedalboard that
+synthesises a plucked string, measures it, processes it with effects and writes
+it as an audio file (@sec-pedalboard).
 
 The chapters are meant to be read in order. Mathematical refreshers live in
 @sec-math-toolbox, so you can look things up without breaking the flow. The

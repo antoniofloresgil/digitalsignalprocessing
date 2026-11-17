@@ -161,3 +161,60 @@
 - **Pyodide integers are 32-bit.** `np.arange(a, b) ** 2` overflows silently when
   the squares exceed $2^{31}$, which CPython (64-bit) hides; found by running
   every cell of the appendix in Pyodide. Use `dtype=float` for such sums.
+
+## 2026-11-17: chapter 15 (digital pedalboard) and the planned SDR annex
+
+- **Chapter 15, "Project: A Digital Pedalboard"**, goes in Part V next to the
+  modem. It follows four stages (generate, show, process, output) around one
+  idea: the pitch tuner of stage 3 is the measuring instrument that checks every
+  effect of stage 4. Sources: Karplus-Strong string as a feedback filter with an
+  all-pass fractional delay (@karplus1983, @jaffe1983); EQ biquads
+  (@bristowjohnson); distortion with oversampling; Schroeder/Moorer reverb
+  (@schroeder1962, @moorer1979); WSOLA pitch shifter (@verhelst1993); frequency
+  estimation against the Cramér-Rao bound (@rife1974, @kay1993); output with
+  quantisation, dither and 2x interpolation.
+- **Sampling rate 24 kHz**, so that the 48 kHz output stage is an exact factor 2
+  and the cells stay fast in Pyodide.
+- **Decisions taken while testing the cells over 30 seeds** (the asserts must hold
+  for any seed, and the first versions did not):
+  - The pluck is a *triangle* (a string lifted by a pick) plus 15 % noise, not a
+    pure noise burst: with noise alone the fundamental of some strings is nearly
+    absent by chance, and the autocorrelation tuner then jumps an octave. The
+    triangle also gives a physical meaning to the pick position (exercise 1).
+  - The loop gain is capped at 0.9995: a high note cannot ring for the requested
+    $T_{60}$, because the averaging filter alone costs $\cos(\pi f_0/F_s)$ per
+    period (an A5 asked for 2 s gave $g > 1$, an unstable string).
+  - The tuner refines the *strongest of the first eight harmonics* and divides by
+    its number; refining near the fundamental was biased by stronger neighbours
+    after the distortion.
+  - Onsets are detected on the energy above 1.5 kHz with a 100 ms refractory
+    period; on the whole signal the beating of neighbouring notes (E4 and F4)
+    produces false onsets. The processed signals reuse the onsets of the dry one,
+    since the pedals add no delay.
+  - The melody rings for $T_{60}$ = 1.2 s: with 2 s the tail of the previous note
+    biased the reading of the next one by up to 10 cents (a real limit of a
+    monophonic tuner, which the chapter tells the reader).
+  - **Polyphonic detection was left out.** Matching pursuit on harmonic templates
+    identified a triad correctly in about 21 of 24 trials at best (octave errors
+    because harmonics of different notes coincide), too unreliable to be a result
+    of the book; it is Exercise 3. The chord is only synthesised and heard.
+  - Dither is checked by the correlation of the output with the music
+    ($\sigma_x/\sqrt{\sigma_x^2 + \Delta^2/4}$), not by reading a note from a
+    sub-LSB signal, which fails for some seeds because the strongest line can be
+    noise.
+  - The decimation filter of the oversampled distortion overshoots (peak 1.16 to
+    1.42 for a signal that never exceeds 1), which the chapter shows and which
+    motivates the normalisation of the output stage.
+- **Audio in the HTML edition** uses the same mechanism as the GIF animations: an
+  object whose `_repr_html_` returns `<audio controls src="data:audio/wav;base64,...">`,
+  which works in build-time cells and in the editable Pyodide cells alike. The
+  PDF shows waveforms and spectrograms instead (audio cells are
+  `content-visible when-format="html"`).
+- **Planned, not started: a software-defined radio annex** (simulated FM
+  broadcast at IQ baseband: mixing, multi-stage decimation, FM demodulation,
+  de-emphasis, audio out), deeper than the chapter projects, to be written once
+  chapter 15 is finished. Its references are already in `references.bib`
+  (@mitola1995, @reed2002, @collins2018, @rice2009, @harris2004, @crochiere1983,
+  @hogenauer1981, @carson1922, @haykin2009, @lyons2011, @itu450). The entries
+  were written from memory and must be checked against the sources before the
+  annex is published.
