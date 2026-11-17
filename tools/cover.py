@@ -278,7 +278,7 @@ PARTS = [
     ("Frequency", "Complex sinusoids, the DFT and the FFT"),
     ("Filters", "Convolution, the z-transform, filter design"),
     ("From Analog to Digital and Back", "Noise, interpolation, A/D, multirate"),
-    ("Putting It All Together", "A software modem, end to end"),
+    ("Putting It All Together", "Modem, pedalboard and software radio"),
 ]
 
 
@@ -293,7 +293,7 @@ def back():
 
     y = 590
     ax.plot([64, 736], [y, y], color=C["line"], lw=1)
-    text(ax, 64, y + 44, "F I V E   P A R T S ,   O N E   M O D E M", 12,
+    text(ax, 64, y + 44, "F I V E   P A R T S ,   T H R E E   P R O J E C T S", 12,
          C["muted"], weight="bold")
     for k, (title, sub) in enumerate(PARTS):
         yk = y + 92 + 60 * k
