@@ -328,7 +328,7 @@
   record and window length. For a short slice the chapter checks the result
   against the pinned SciPy implementation.
 - The SDR chapter ships a CC BY 4.0 excerpt of the Iraq RF Spectrum Dataset,
-  DOI `10.5281/zenodo.22019720`. The original float data's 256 converter levels
+  DOI `10.5281/zenodo.22983712` (the newer record of Part 1; its data archives are byte-identical to version 1.0, DOI `10.5281/zenodo.22019720`). The original float data's 256 converter levels
   are stored as byte codes and the rate and centre frequency live in a SigMF
   sidecar. The same receiver accepts simulated records, this real recording,
   and other unsigned interleaved I/Q files. An explicit carrier offset bypasses

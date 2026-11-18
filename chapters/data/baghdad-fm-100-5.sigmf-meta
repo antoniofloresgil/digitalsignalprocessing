@@ -6,7 +6,7 @@
     "core:author": "Mays Jalal and Ali Taresh",
     "core:hw": "RTL-SDR V3 with a telescopic antenna",
     "core:license": "https://creativecommons.org/licenses/by/4.0/",
-    "core:description": "The first 0.75 seconds of FM-outdoor_100.5e6MHz.iq from Day1-2.zip, Iraq RF Spectrum Dataset, Part 1 (https://doi.org/10.5281/zenodo.22019720). Captured outdoors in Baghdad on 2026-06-02. The original 256 equally spaced float32 levels are represented as unsigned byte codes, with I and Q interleaved.",
+    "core:description": "The first 0.75 seconds of FM-outdoor_100.5e6MHz.iq from Day1-2.zip, Iraq RF Spectrum Dataset, Part 1 (https://doi.org/10.5281/zenodo.22983712; the same archive is in version 1.0, https://doi.org/10.5281/zenodo.22019720). Captured outdoors in Baghdad on 2026-06-02. The original 256 equally spaced float32 levels are represented as unsigned byte codes, with I and Q interleaved.",
     "core:sha512": "4eb9a678aa7d42483f9ff728b6db09c4bdf18bf736f2997b2edb67784a761b7e29ed8f5b56bcfa43f53a167fb9e61bcbf96971eca39afc8f49c0ae8248ff21a0"
   },
   "captures": [
