@@ -276,8 +276,8 @@ by that code."""
 PARTS = [
     ("Signals", "Sampling, quantization, signals as vectors"),
     ("Frequency", "Complex sinusoids, the DFT and the FFT"),
-    ("Filters", "Convolution, the z-transform, filter design"),
-    ("From Analog to Digital and Back", "Noise, interpolation, A/D, multirate"),
+    ("Filters and Noise", "Convolution, filter design, spectral estimation"),
+    ("From Analog to Digital and Back", "Sampling, interpolation, A/D, multirate"),
     ("Putting It All Together", "Modem, pedalboard and software radio"),
 ]
 

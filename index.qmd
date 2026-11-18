@@ -44,19 +44,31 @@ You can work with the code in three ways, from least to most effort:
 ## How to read it
 
 Part I treats signals as lists of numbers and as vectors. Part II introduces
-frequency, the central idea of the book. Part III shows how to change signals
-with filters. Part IV connects the digital world with the analog one. Part V
+frequency, the central idea of the book. Part III covers filters and noise.
+Part IV connects the digital world with the analog one. Part V
 puts everything together in three projects: a software modem that sends bits
 through a simulated telephone line (@sec-modem), a digital pedalboard that
 synthesises a plucked string, measures it, processes it with effects and writes
 it as an audio file (@sec-pedalboard), and a software-defined radio that
 receives stereo FM stations from the raw samples of a tuner (@sec-sdr).
 
-The chapters are meant to be read in order. Mathematical refreshers live in
-@sec-math-toolbox, so you can look things up without breaking the flow. The
-proofs that need more analysis than the chapters introduce, such as completeness
-of function spaces, Fourier inversion and Plancherel, are collected in
-@sec-advanced-proofs; the chapters say where they rely on it.
+For a first pass, follow this route and choose one project.
+
+| Goal | Read and practise |
+| --- | --- |
+| Represent and compare signals | @sec-what-is-dsp through @sec-complex-numbers. In @sec-discrete-time-signals start with indices, extensions, shifts, impulses and energy. Return to the accumulation and power proofs when needed. |
+| See what is in a signal | @sec-dft and the discrete-time sections of @sec-spectral-analysis. After the PSD and Welch sections of @sec-noise, do @sec-spectral-lab. |
+| Change what is in a signal | @sec-lti through @sec-filter-design. After the spectral lab, return to @sec-block-lab to design and validate a filter for the same recording. |
+| Cross the analog–digital boundary | Read the continuous-time Fourier sections of @sec-spectral-analysis, then @sec-sampling through @sec-multirate. |
+
+Follow @sec-modem-sync for the modem's frame-recovery test, @sec-pedalboard-quick
+for a short audio project, or @sec-sdr-mono for the shortest path through the
+radio. The optional extensions let you follow one project further.
+
+@sec-math-toolbox collects conventions and formulas. @sec-advanced-proofs
+contains proofs that require further analysis, including completeness of
+function spaces, Fourier inversion and Plancherel. For a self-check after
+the exercises, see @sec-selected-solutions.
 
 ## Acknowledgements
 

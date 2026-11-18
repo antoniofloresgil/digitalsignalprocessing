@@ -378,6 +378,8 @@ plt.ylabel("omega / pi (at the new rate)"); plt.show()
 
 ## Exercises
 
+See @sec-solution-13 for a worked solution.
+
 1. **Down-sampling a sinusoid.** Use @thm-downsampling-spectrum to predict the
    frequency of $\cos(\omega_0n)$ after down-sampling by $M$, for every
    $\omega_0 \in [0, \pi]$, and plot the result. Compare with the wagon-wheel curve of

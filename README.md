@@ -10,6 +10,19 @@ numbers, Fourier analysis, the z-transform) are introduced from scratch.
 - HTML (with in-browser *Try it* exercises): <https://antoniofloresgil.github.io/digitalsignalprocessing/>
 - PDF: download it from the sidebar of the HTML edition.
 
+## Practise with recordings
+
+- The [spectral measurement lab](chapters/10-random-signals-and-noise.qmd)
+  and the [block filtering lab](chapters/09-filter-design.qmd) use the same
+  [guitar recording](chapters/data/guitar-e4.wav).
+- [Selected exercise solutions](appendices/selected-solutions.qmd) include
+  one worked exercise per chapter.
+- The [SDR project](chapters/16-software-defined-radio.qmd) decodes a
+  [recorded FM capture](chapters/data/baghdad-fm-100-5.sigmf-data) with
+  [SigMF metadata](chapters/data/baghdad-fm-100-5.sigmf-meta), licensed CC BY 4.0.
+- The [recording credits](chapters/data/README.md) give the provenance and
+  license of each bundled file.
+
 ## Run the code and build the book
 
 You only need [Git](https://git-scm.com/downloads) and

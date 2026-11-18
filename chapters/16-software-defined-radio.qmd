@@ -1,3 +1,13 @@
+---
+resources:
+  - data/baghdad-fm-100-5.sigmf-data
+  - data/baghdad-fm-100-5.sigmf-meta
+pyodide:
+  resources:
+    - data/baghdad-fm-100-5.sigmf-data
+    - data/baghdad-fm-100-5.sigmf-meta
+---
+
 # Project: A Software-Defined Radio Receiver {#sec-sdr}
 
 This is the last project of the book and the largest. After the modem
@@ -262,12 +272,14 @@ There is no antenna in a book. What we do instead is to *build the signal that
 a software-defined radio delivers*: an array of complex numbers, sampled at
 0.96 MHz, that contains four stations, noise, a small frequency error of the tuner
 and the roughness of an 8-bit converter. We build it with the same kind of
-formulas that a real station uses, so that the receiver cannot tell the difference.
+formulas that a real station uses, so that the receiver can use either kind of capture.
 In fact the capture is stored in the *format* of a real dongle (interleaved
 unsigned bytes), and the receiver reads it as it would read a file recorded
 from an antenna: replacing one by the other is Exercise 8.
 
-The plan of the project is the following.
+For a first pass, read the I/Q and discriminator sections, then follow Stages 1–5
+through @sec-sdr-mono. Stereo, noise behaviour and a second receiver extend
+that path. The full project is laid out below.
 
 | Stage | What we do | Tools of the book |
 |---|---|---|
@@ -282,7 +294,8 @@ The plan of the project is the following.
 | 9. Real data | Run the receiver on a recording from a real dongle | everything |
 
 Before building the antenna signal we need to understand what a station puts on
-it. That is the subject of the next two sections.
+it. That is the subject of the next two sections. The bundled capture in
+@sec-sdr-bundled lets you run the receiver on real RF samples.
 
 ## How information travels by radio {#sec-sdr-modulation}
 
@@ -575,7 +588,9 @@ message of the scaled-down radio:
 def discriminator(z, rate):
     """Instantaneous frequency (Hz) of a complex signal: (rate / 2 pi) arg(z[n] conj(z[n-1]))."""
     return rate / (2 * np.pi) * np.angle(z[1:] * np.conj(z[:-1]))
+```
 
+```{python}
 freq = discriminator(z_true, fs_r)
 assert np.allclose(freq, 20_000 * msg[1:], atol=1e-8)               # exact, @prp-discriminator
 fading = 1.0 + 0.8 * np.sin(2 * np.pi * 37 * t_r) * rng.uniform(0.5, 1.0, len(t_r))   # an irregular amplitude, always > 0
@@ -659,7 +674,9 @@ def de_emphasis(y, rate, tau=50e-6):
     """One-pole low-pass with the time constant tau: y[n] = (1 - a) x[n] + a y[n - 1]."""
     a = np.exp(-1 / (tau * rate))
     return signal.lfilter([1 - a], [1, -a], y)
+```
 
+```{python}
 x_test = rng.normal(size=5_000)
 assert np.allclose(de_emphasis(pre_emphasis(x_test, 48_000), 48_000), x_test, atol=1e-12)   # exact inverses
 w_, h_ = signal.freqz([1, -np.exp(-1 / (50e-6 * 48_000))], [1 - np.exp(-1 / (50e-6 * 48_000))], worN=[1e-9, 2 * np.pi * 15_000 / 48_000])
@@ -681,7 +698,9 @@ show that it reconstructs the stereo image.
 ```{python}
 fs_audio, fs_mpx, fs_rf = 48_000, 240_000, 960_000             # audio, composite/modulator, tuner output (Hz)
 DURATION = 1.5                                                # seconds of capture
+```
 
+```{python}
 def tone(f, dur, rate, decay=5.0):
     """A plucked-like tone: four harmonics with an exponential decay and a soft attack."""
     t = np.arange(int(dur * rate)) / rate
@@ -848,12 +867,16 @@ def quantise_iq(x, bits=8):
 def capture(rng, cnr_db=35.0, lo_error=2.5e3, bits=8):
     """What an SDR delivers: unsigned bytes I Q I Q ... of the sum of the stations plus noise."""
     return quantise_iq(analog_band(rng, cnr_db, lo_error), bits)
+```
 
+```{python}
 def bytes_to_iq(raw, bits=8):
     """Interleaved unsigned bytes back to complex samples in [-1, 1]."""
     levels = 2 ** bits - 1
     return ((raw[0::2].astype(float) - levels / 2) + 1j * (raw[1::2].astype(float) - levels / 2)) / (levels / 2)
+```
 
+```{python}
 raw = capture(np.random.default_rng(88))
 iq = bytes_to_iq(raw)
 clipped = np.mean((raw == 0) | (raw == 255))
@@ -945,7 +968,9 @@ def scan_channels(f, P_db, centres=CHANNELS, half=90e3, margin_db=10.0):
                 c = np.sum(f[window] * (P[window] - floor)) / np.sum(P[window] - floor)
             found.append((c, 10 * np.log10(cnr)))
     return found
+```
 
+```{python}
 f_cap, P_cap = psd_db(iq, fs_rf)
 found = scan_channels(f_cap, P_cap)
 true_carriers = {name: STATIONS[name] + 2.5e3 for name in "ABCD"}      # where the stations really are (tuner error included)
@@ -992,7 +1017,9 @@ def centroid(f, P_db, centre, half=90e3):
     P = 10 ** (P_db / 10)
     window = np.abs(f - centre) < half
     return np.sum(f[window] * P[window]) / np.sum(P[window])
+```
 
+```{python}
 carriers = [c for c, _ in found]
 for name, c in zip("ABCD", carriers):
     f_t, P_t = psd_db(tune(iq, c, fs_rf), fs_rf)
@@ -1029,8 +1056,6 @@ output samples that are kept: one output of $N$ multiplications every four
 input samples, and not four.
 
 ```{python}
-#| label: fig-channel-filter
-#| fig-cap: "The channel filter (red) over the spectrum of the capture tuned to station A (blue). It passes the station (|f| < 90 kHz) and removes the neighbours, which start at 110 kHz, by more than 60 dB. Right: after decimation by 4 with the filter the spectrum is clean (blue); without it, by keeping every fourth sample, the neighbours fold on top of the station (orange)."
 def channel_filter(passband=90e3, stopband=110e3, atten=60.0, rate=fs_rf):
     """Kaiser-window low-pass FIR with the given band edges (Hz) and stopband attenuation (dB)."""
     n_taps, beta = signal.kaiserord(atten, (stopband - passband) / (rate / 2))
@@ -1043,6 +1068,11 @@ def select_channel(x, f_offset, h, down=4):
     return y[(len(h) - 1) // 2 // down:]
 
 h_ch = channel_filter()
+```
+
+```{python}
+#| label: fig-channel-filter
+#| fig-cap: "The channel filter (red) over the spectrum of the capture tuned to station A (blue). It passes the station (|f| < 90 kHz) and removes the neighbours, which start at 110 kHz, by more than 60 dB. Right: after decimation by 4 with the filter the spectrum is clean (blue); without it, by keeping every fourth sample, the neighbours fold on top of the station (orange)."
 w_h, H_h = signal.freqz(h_ch, worN=8192, fs=fs_rf)
 stop = w_h >= 110e3
 print(f"channel filter: {len(h_ch)} taps; attenuation beyond 110 kHz: {-20 * np.log10(np.abs(H_h[stop]).max()):.1f} dB; "
@@ -1121,7 +1151,9 @@ def demodulate(x, rate=fs_mpx, deviation=75e3):
     """FM demodulation: the discriminator output in units of the deviation, and its mean (the residual offset in Hz)."""
     m = discriminator(x, rate) / deviation
     return m - np.mean(m), np.mean(m) * deviation
+```
 
+```{python}
 m_hat, residual = demodulate(x_sel)
 print(f"residual frequency error after the tuning of Stage 2: {residual:.1f} Hz (the offset to start with: 2500 Hz)")
 assert abs(residual) < 100
@@ -1170,7 +1202,46 @@ plt.tight_layout()
 plt.show()
 ```
 
-## Stage 6: stereo decoding {#sec-sdr-stereo}
+### First audio: FM in mono {#sec-sdr-mono}
+
+Tune one station, isolate its channel and run the discriminator. Its output
+contains the stereo pilot and difference channel alongside the mono sum. A
+15 kHz low-pass keeps the sum. The filter also suppresses frequencies that
+would alias when we keep one sample in five. Apply de-emphasis after the
+change of rate.
+
+```{python}
+LOWPASS_15K = signal.firwin(255, 15e3, fs=fs_mpx, window=("kaiser", 7.0))
+
+def mono_baseband(m):
+    """Low-pass the multiplex and restore the gain of the mono channel."""
+    return np.convolve(m, LOWPASS_15K, mode="same") / 0.9
+
+def to_audio_rate(x):
+    """From 240 kHz to 48 kHz: keep every fifth sample (the 15 kHz low-pass of the decoder has already filtered)."""
+    return x[::5]
+```
+
+```{python}
+mono_preview = de_emphasis(to_audio_rate(mono_baseband(m_hat)), fs_audio)
+mono_truth = np.mean(np.column_stack(PROGRAMS["A"]), axis=1)
+mono_snr, _, _ = fit_snr_db(mono_preview, mono_truth, skip=7200)
+print(f"mono output: {len(mono_preview):,} samples at {fs_audio:,} Hz")
+print(f"mono SNR against the transmitted sum: {mono_snr:.1f} dB")
+assert mono_snr > 20
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"Station A, mono": mono_preview[:fs_audio // 2]}, fs_audio)
+```
+:::
+
+The stereo route below adds one more demodulation to measure the difference
+between channels. For the short route, jump to @sec-sdr-real and use the
+same receiver stages on a recorded input.
+
+## Stage 6 (extension): stereo decoding {#sec-sdr-stereo}
 
 The receiver has the composite signal and must now undo the multiplex of
 @sec-sdr-broadcast. First, it must decide whether the station is stereo: is
@@ -1184,7 +1255,9 @@ def pilot_level_db(m, rate=fs_mpx):
     near = P[(f > 18.9e3) & (f < 19.1e3)].mean()
     around = P[((f > 17e3) & (f < 18e3)) | ((f > 20e3) & (f < 21e3))].mean()
     return 10 * np.log10(near / around)
+```
 
+```{python}
 levels = {}
 for name, c in zip("ABCD", carriers):
     levels[name] = pilot_level_db(demodulate(select_channel(iq, c, h_ch))[0])
@@ -1227,8 +1300,6 @@ of 50 Hz), for a detector gain $K_d = A_p/2$ with $A_p$ the amplitude of the pil
 $k_p = 2\zeta\omega_n/K_d$, $k_i = \omega_n^2/K_d$.
 
 ```{python}
-#| label: fig-pll
-#| fig-cap: "The phase-locked loop acquiring the pilot of station A. Top: the phase detector's output $e[n]$ (blue) and its average over 1 ms (orange); the loop locks in the first milliseconds and then the average is zero. Bottom: the frequency that the loop's integrator has learned, which settles at the pilot's offset from the nominal 19 kHz."
 def pilot_pll(p, rate=fs_mpx, f0=19e3, bandwidth=50.0, zeta=0.707):
     """Second-order phase-locked loop on a real pilot p = A sin(theta). Returns theta_hat[n], e[n], s[n]."""
     omega_n = 2 * np.pi * bandwidth / rate
@@ -1249,7 +1320,11 @@ def pilot_pll(p, rate=fs_mpx, f0=19e3, bandwidth=50.0, zeta=0.707):
 def extract_pilot(m, rate=fs_mpx):
     """The pilot: a band-pass FIR filter around 19 kHz (zero delay: the convolution is centred)."""
     return np.convolve(m, signal.firwin(401, [18.5e3, 19.5e3], pass_zero=False, fs=rate), mode="same")
+```
 
+```{python}
+#| label: fig-pll
+#| fig-cap: "The phase-locked loop acquiring the pilot of station A. Top: the phase detector's output $e[n]$ (blue) and its average over 1 ms (orange); the loop locks in the first milliseconds and then the average is zero. Bottom: the frequency that the loop's integrator has learned, which settles at the pilot's offset from the nominal 19 kHz."
 pilot_A = extract_pilot(m_hat)
 theta_A, err_A, freq_A = pilot_pll(pilot_A)
 t_ms = np.arange(len(err_A)) / fs_mpx * 1e3
@@ -1306,15 +1381,15 @@ received left channel to the transmitted $L$ and $R$ by least squares
 (@sec-signals-as-vectors): the ratio of the two coefficients is the crosstalk.
 
 ```{python}
-LOWPASS_15K = signal.firwin(255, 15e3, fs=fs_mpx, window=("kaiser", 7.0))
-
 def stereo_decode(m, theta, phase_error=0.0):
     """Mono sum M and difference D (both scaled back by the 0.9 of the composite) from the composite m and the pilot phase."""
     subcarrier = np.sin(2 * theta + phase_error)
-    M = np.convolve(m, LOWPASS_15K, mode="same") / 0.9
+    M = mono_baseband(m)
     D = np.convolve(2 * m * subcarrier, LOWPASS_15K, mode="same") / 0.9
     return M, D
+```
 
+```{python}
 def separation_db(left, ref_L, ref_R, skip=7200):
     """Least-squares fit of the received channel on [L, R]; returns (crosstalk as a ratio in dB, SNR in dB)."""
     lag = align_lag(left, ref_L)
@@ -1324,10 +1399,6 @@ def separation_db(left, ref_L, ref_R, skip=7200):
     coef, *_ = np.linalg.lstsq(A, e[skip:n], rcond=None)
     residual = e[skip:n] - A @ coef
     return 20 * np.log10(abs(coef[0] / coef[1])), 10 * np.log10(np.sum((A @ coef) ** 2) / np.sum(residual ** 2))
-
-def to_audio_rate(x):
-    """From 240 kHz to 48 kHz: keep every fifth sample (the 15 kHz low-pass of the decoder has already filtered)."""
-    return x[::5]
 
 L_ref, R_ref = PROGRAMS["A"]
 print(f"{'phase error':>12} {'separation':>11} {'tan^2(e/2)':>11}")
@@ -1360,7 +1431,7 @@ so, together, they cancel. We assemble the whole chain in a function of the raw
 bytes, which is the receiver.
 
 ```{python}
-def receive_station(x, carrier, h=h_ch):
+def receive_station(x, carrier, h=h_ch, tau=50e-6):
     """One station from the capture x (complex, 960 kS/s): stereo audio at 48 kHz and measurements."""
     m, residual = demodulate(select_channel(x, carrier, h))
     stereo_level = pilot_level_db(m)
@@ -1370,9 +1441,10 @@ def receive_station(x, carrier, h=h_ch):
         M, D = stereo_decode(m, theta)
         L, R = M + D, M - D
     else:
-        M = np.convolve(m, LOWPASS_15K, mode="same") / 0.9
+        M = mono_baseband(m)
         L = R = M
-    audio = np.column_stack([de_emphasis(to_audio_rate(L), fs_audio), de_emphasis(to_audio_rate(R), fs_audio)])
+    audio = np.column_stack([de_emphasis(to_audio_rate(channel), fs_audio, tau)
+                             for channel in (L, R)])
     return {"audio": audio, "stereo": bool(is_stereo), "pilot_db": stereo_level, "offset": carrier, "residual_hz": residual}
 
 def to_receiver_rate(x, rate):
@@ -1383,13 +1455,20 @@ def to_receiver_rate(x, rate):
         x = signal.resample_poly(x, ratio.numerator, ratio.denominator)
     return x
 
-def fm_receiver(raw_bytes, rate=fs_rf, centres=CHANNELS):
-    """The receiver: unsigned 8-bit I/Q bytes in (recorded at `rate` S/s, with stations on the grid `centres`),
-    a list of stations with their stereo audio out."""
-    x = to_receiver_rate(bytes_to_iq(raw_bytes), rate)
-    f, P = psd_db(x, fs_rf)
-    return [dict(receive_station(x, carrier), cnr_db=cnr) for carrier, cnr in scan_channels(f, P, centres=centres)]
+def fm_receiver(raw_bytes, rate=fs_rf, centres=CHANNELS, carriers=None, tau=50e-6):
+    """Decode unsigned I/Q bytes and return the measurements and stereo audio of each station.
 
+    Carrier offsets in Hz can be given explicitly. Otherwise scan the supplied grid.
+    """
+    x = to_receiver_rate(bytes_to_iq(raw_bytes), rate)
+    if carriers is not None:
+        return [receive_station(x, carrier, tau=tau) for carrier in carriers]
+    f, P = psd_db(x, fs_rf)
+    return [dict(receive_station(x, carrier, tau=tau), cnr_db=cnr)
+            for carrier, cnr in scan_channels(f, P, centres=centres)]
+```
+
+```{python}
 stations_rx = fm_receiver(raw)
 print(f"{'station':>8} {'carrier':>11} {'CNR':>8} {'type':>7} {'audio SNR L':>12} {'audio SNR R':>12}")
 scores = {}
@@ -1404,9 +1483,9 @@ assert min(scores["A"]) > 20 and min(scores["C"]) > 20 and min(scores["B"]) > 20
 assert min(scores["D"]) > 8                                        # the faint station is noisy, but there
 ```
 
-The receiver recognises that A and C are stereo and B and D mono, and recovers
-the audio of each with a signal-to-noise ratio above 20 dB; station D, which is much closer to the
-noise, comes out noisier. For the strong stations the limit is not
+The receiver recognises that A and C are stereo and B and D mono. The table
+reports the audio SNR for this capture. Noise should become more important as
+stations grow weaker, as we test below. For the strong stations the limit is not
 the radio noise: it is the distortion of squeezing the signal into a 200 kHz channel, which
 we measure in @sec-sdr-noise. @fig-audio-rx compares what station A sent with what we received.
 
@@ -1445,7 +1524,7 @@ that a weak signal brings, a hiss that rises with frequency, as we are going to
 see in the next section.
 :::
 
-## Stage 8: measurements {#sec-sdr-noise}
+## Stage 8 (extension): receiver measurements {#sec-sdr-noise}
 
 A receiver is judged by how well it does with *weak* stations. How does the
 quality of the audio depend on the strength of the signal? This is where FM
@@ -1668,6 +1747,90 @@ sacrifices fidelity for selectivity.
 
 ## Stage 9: real data {#sec-sdr-real}
 
+### Decode the bundled RF capture {#sec-sdr-bundled}
+
+Download the [I/Q samples](data/baghdad-fm-100-5.sigmf-data) and their
+[SigMF metadata](data/baghdad-fm-100-5.sigmf-meta). Mays Jalal and Ali Taresh
+recorded these samples outdoors in Baghdad with an RTL-SDR V3 on 2 June 2026.
+The tuner centre was 100.5 MHz and the sample rate was 2.048 MS/s. This
+0.75-second excerpt from the *Iraq RF Spectrum Dataset* is distributed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) [@iraqrf2026].
+The first 1,536,000 complex samples were taken from the original file, and
+its 256 equally spaced converter levels were encoded as interleaved unsigned
+I/Q bytes.
+
+A channel is visible about 200 kHz above the capture centre. Supply this
+offset explicitly to the same `fm_receiver` used for the simulated stations.
+The receiver removes the tuner DC offset, resamples by 15/32 to 960 kS/s,
+tunes and selects the channel, and demodulates it to 48 kHz audio. For this
+example use the project's 50 μs de-emphasis setting.
+
+```{python}
+from pathlib import Path
+import json
+
+def read_cu8(path):
+    """Read interleaved unsigned-byte I/Q from a headerless file."""
+    values = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
+    if values.size == 0 or values.size % 2 != 0:
+        raise ValueError("Expected a nonempty file with two bytes per complex sample")
+    return values
+
+capture_path = Path("data/baghdad-fm-100-5.sigmf-data")
+metadata_rf = json.loads(capture_path.with_suffix(".sigmf-meta").read_text())
+rate_rf = metadata_rf["global"]["core:sample_rate"]
+centre_rf = metadata_rf["captures"][0]["core:frequency"]
+samples_rf = read_cu8(capture_path)
+offset_rf = 200_000
+```
+
+```{python}
+receiver_rf = fm_receiver(samples_rf, rate=rate_rf, carriers=[offset_rf])[0]
+audio_rf = receiver_rf["audio"]
+print(f"tuned RF frequency: {(centre_rf + offset_rf) / 1e6:.3f} MHz")
+print(f"pilot over its surroundings: {receiver_rf['pilot_db']:.1f} dB; "
+      f"stereo detected: {receiver_rf['stereo']}")
+print(f"residual tuning offset: {receiver_rf['residual_hz']:+.0f} Hz")
+print(f"decoded duration: {len(audio_rf) / fs_audio:.3f} s at {fs_audio:,} Hz")
+assert len(samples_rf) == 2 * 1_536_000
+assert abs(len(audio_rf) / fs_audio - 0.75) < 0.002
+assert np.isfinite(audio_rf).all() and np.std(audio_rf) > 0
+```
+
+```{python}
+#| label: fig-sdr-bundled
+#| fig-cap: "Measured I/Q spectrum (left), with the receiver tuned near +200 kHz. The recovered multiplex (right) shows the pilot near 19 kHz."
+field_iq = to_receiver_rate(bytes_to_iq(samples_rf), rate_rf)
+field_mpx, _ = demodulate(select_channel(field_iq, offset_rf, h_ch))
+f_field, db_field = psd_db(field_iq, fs_rf, nperseg=8192)
+f_mux, p_mux = welch_psd(field_mpx, fs_mpx, nperseg=8192)
+pilot_bins = np.flatnonzero(abs(f_mux - 19_000) < 100)
+pilot_peak = f_mux[pilot_bins[np.argmax(p_mux[pilot_bins])]]
+print(f"pilot peak on the FFT grid: {pilot_peak / 1000:.3f} kHz")
+assert pilot_level_db(field_mpx) > 10
+fig, axes = plt.subplots(1, 2, figsize=(7.5, 3))
+axes[0].plot(f_field / 1000, db_field, lw=0.7)
+axes[0].axvline(offset_rf / 1000, color="C3", ls="--")
+axes[0].set(xlabel="offset from tuner centre (kHz)", ylabel="PSD (dB/Hz)")
+axes[1].plot(f_mux / 1000, 10 * np.log10(np.maximum(p_mux, 1e-15)), lw=0.7)
+axes[1].axvline(19, color="C3", ls="--")
+axes[1].set(xlim=(10, 30), xlabel="multiplex frequency (kHz)", ylabel="PSD (dB/Hz)")
+plt.tight_layout()
+plt.show()
+```
+
+The pilot and plausible residual offset are structural checks. The
+transmitted audio is unavailable as a reference, so this example cannot
+measure reconstruction SNR. To write the decoded samples locally, run
+`wavfile.write("baghdad-fm.wav", fs_audio, audio_rf.astype(np.float32))`
+after importing `wavfile` from `scipy.io`. To use an RTL-SDR file of your own,
+provide its sample rate and the carrier offset in Hz from the tuner centre.
+For example, a 100.7 MHz station in a file centred at 100.5 MHz has an offset
+of +200 kHz. For longer recordings, inspect the spectrum before choosing
+the offset.
+
+### A file round trip
+
 The function `fm_receiver` takes *bytes*: it does not know that the capture is
 synthetic. The programs that record from a dongle (the `rtl_sdr` utility of the
 RTL-SDR project, for instance) write exactly that, interleaved unsigned 8-bit
@@ -1720,7 +1883,7 @@ most: it sits 400 kHz from the new centre, near the edge of the captured band, a
 resampling filter cuts a little of its outer sideband, which biases its carrier estimate by
 a fraction of a kilohertz and lowers its audio SNR.
 
-### Real recordings
+### Further recordings from Sydney {#real-recordings}
 
 The receiver has been run on real recordings as well. @fmradiosamples publishes
 recordings made in Sydney with a USB dongle, as 8-bit I/Q at 1.024 MS/s, each centred
@@ -1766,7 +1929,7 @@ to know about:
 
 The structure of the receiver, though, is the one that we have built.
 
-### A second opinion
+### Extension: a second receiver
 
 Without a transmitted signal to compare with, there is a way to gain confidence in a receiver:
 to write a *second* receiver, differently, and compare the two. If both are right, they
@@ -1862,6 +2025,8 @@ sibilants) and not noise, but the book cannot show it, since it is produced from
 
 ## Exercises {#sec-sdr-exercises}
 
+See @sec-solution-16 for a worked solution.
+
 1. **Regenerating the subcarrier without a loop.** Replace the PLL by the analytic signal of
    the pilot (`scipy.signal.hilbert`): if $p = A\sin\theta$ then its analytic signal is
    $-jAe^{j\theta}$ and the square of its unit-modulus version has the phase $2\theta$. Compare
@@ -1890,8 +2055,8 @@ sibilants) and not noise, but the book cannot show it, since it is produced from
    (estimated from the noise at 60–100 kHz of the composite signal), mixes $\hat L$ and
    $\hat R$ towards $M$. At which ratio would you start? Compare the noise at 15 dB
    with and without it.
-8. **A real recording.** Run the receiver on one of the public recordings of
-   @sec-sdr-real, or on one of your own, made with an RTL-SDR dongle and the `rtl_sdr`
+8. **A real recording.** Run the receiver on the bundled recording in @sec-sdr-bundled. Then try a longer
+   recording from the Sydney examples or one of your own, made with an RTL-SDR dongle and the `rtl_sdr`
    utility at 960 kS/s or at another rate. Try 4 s instead of 1.5 s. Does the
    pilot stay locked? Listen to the result and compare it with a normal radio.
 9. **AM.** Add an AM station to the capture (@fig-am-fm) and demodulate it with an

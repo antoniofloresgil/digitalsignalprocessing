@@ -22,9 +22,8 @@ By the end of the chapter you should be able to:
 
 - explain what sampling and quantization are and what each one loses;
 - state the sampling theorem with its hypotheses, and recognise aliasing;
-- compute the signal-to-noise ratio of a uniform quantizer;
-- explain, with numbers, why digital transmission beats analog transmission
-  over long distances.
+- compute the quantization step and measure its error;
+- describe the sequence of operations in a digital processing system.
 
 We use three libraries throughout the book: NumPy for arrays and maths,
 Matplotlib for plots and SciPy for signal processing and statistics routines.
@@ -32,9 +31,7 @@ Matplotlib for plots and SciPy for signal processing and statistics routines.
 ```{python}
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import stats
 
-rng = np.random.default_rng(2026)   # fixed seed: the same "random" numbers every build
 plt.rcParams["figure.figsize"] = (7, 3)
 ```
 
@@ -265,6 +262,10 @@ plt.show()
 :::
 ::::
 
+::: {.content-visible when-format="pdf"}
+**Try it.** A 7 Hz cosine sampled at 10 Hz has the same samples as a 3 Hz cosine. Repeat with 9 Hz, sketch the two curves through the sample points, and check that the alias is 1 Hz.
+:::
+
 The family of aliases is the reason for the most important result about
 sampling. We state it now and prove it in @sec-sampling, once Fourier analysis
 is available. "Frequencies present in a signal" will then have an exact
@@ -273,8 +274,8 @@ meaning: the frequencies where its Fourier transform is not zero.
 ::: {#thm-sampling-preview}
 ## Sampling theorem [@shannon1949]
 
-Let $x(t)$ be a finite-energy signal that contains no frequencies above
-$f_{\max}$, that is, whose Fourier transform is zero outside
+Let $x(t)$ be continuous and absolutely integrable. Suppose its Fourier
+transform is absolutely integrable and zero outside
 $[-f_{\max}, f_{\max}]$. If $F_s > 2 f_{\max}$, then $x$ is determined by its
 samples $x[n] = x(nT_s)$, and for every real $t$
 
@@ -402,54 +403,7 @@ $$
 \mathrm{SNR}_{\mathrm{dB}} = 10 \log_{10} \mathrm{SNR}.
 $$
 
-For one important case the SNR can be computed exactly.
-
-::: {#prp-six-db-per-bit}
-## Six decibels per bit
-
-Let $X$ be uniformly distributed on $[-1, 1]$ and let $Q$ be the $B$-bit uniform
-quantizer on $[-1, 1]$. Then the error $E = Q(X) - X$ is uniformly distributed on
-$[-\Delta/2, \Delta/2]$, and
-
-$$
-\mathrm{SNR} = 4^B = 2^{2B}, \qquad
-\mathrm{SNR}_{\mathrm{dB}} = 10\log_{10}\big(4^B\big) = \big(20\log_{10}2\big)\,B \approx 6.02\,B\ \text{dB}.
-$$
-
-That is, **6.02 dB per bit**: $B$ is a number of bits and the coefficient
-$20\log_{10}2 \approx 6.02$ is in dB per bit. Conversely, a target SNR needs
-$B = \tfrac12\log_2\mathrm{SNR} = \mathrm{SNR}_{\mathrm{dB}}/6.02$ bits.
-:::
-
-::: {.proof}
-Each of the $L$ intervals has probability $1/L$, and conditioned on being in
-interval $i$, $X$ is uniform on it. In that interval $E = c_i - X$, where $c_i$ is
-the centre, so $E$ is uniform on $[-\Delta/2, \Delta/2]$ whatever $i$ is. The
-unconditional distribution is therefore the same uniform distribution. Hence
-$\mathbb{E}[E^2] = \frac{1}{\Delta}\int_{-\Delta/2}^{\Delta/2} e^2\,de = \Delta^2/12$.
-Also $\mathbb{E}[X^2] = \frac12\int_{-1}^{1} x^2\,dx = 1/3$. With $\Delta = 2/2^B$,
-$\mathrm{SNR} = (1/3)\,/\,(4/(12 \cdot 4^B)) = 4^B$.
-:::
-
-The experiment agrees with the prediction, up to the statistical error of a
-finite sample:
-
-```{python}
-x = rng.uniform(-1, 1, size=1_000_000)
-
-print(" bits   measured SNR (dB)   6.02 B (dB)")
-for bits in [2, 4, 8, 12, 16]:
-    error = quantize(x, bits) - x
-    snr_db = 10 * np.log10(np.mean(x**2) / np.mean(error**2))
-    print(f"{bits:5d}  {snr_db:14.2f}  {20 * np.log10(2) * bits:14.2f}")
-```
-
-Each extra bit halves $\Delta$, divides the error power by 4 and so adds
-$10\log_{10}4 \approx 6.02$ dB to the SNR. For signals that are not uniformly distributed
-the error is no longer exactly uniform, and @sec-quantization studies when the
-uniform model is still a good approximation; for a full-scale sinusoid it
-leads to the well-known figure $6.02B + 1.76$ dB. A CD, with 16 bits, is
-therefore in the region of 96 to 98 dB.
+@prp-six-db-per-bit derives the 6 dB-per-bit rule for a uniform input.
 
 :::: {.content-visible when-format="html"}
 ::: {.callout-tip}
@@ -488,133 +442,12 @@ the theory in this book ignores quantization and treats samples as real (or
 complex) numbers. Strictly speaking, that theory is *discrete-time* signal
 processing, and *digital* refers to real devices, but both names are used.
 
-## Why bother? Noise and copies
+## Copies and transmission
 
-Turning signals into numbers adds work and a small error. The reward is that
-numbers can be copied, stored and transmitted **without degradation**.
-
-Think about a long cable that carries a signal across an ocean. The cable
-weakens the signal, so every few kilometres a *repeater* has to boost it again.
-Each stretch of cable also adds noise. We model the link as follows.
-
-::: {#def-repeater-chain}
-## A chain of repeaters
-
-A symbol $s_0 \in \{-1, +1\}$ is sent through $K$ stages. Stage $k$ receives
-$r_k = a\,s_{k-1} + w_k$, where $0 < a < 1$ is the attenuation of the cable and
-the noise values $w_1, \dots, w_K$ are independent Gaussian random variables
-with mean 0 and variance $\sigma^2$. Then:
-
-- an **analog repeater** amplifies: $s_k = r_k / a$;
-- a **digital repeater** regenerates: $s_k = +1$ if $r_k \geq 0$ and $s_k = -1$
-  otherwise.
-:::
-
-```{python}
-def send_through_link(signal, stages, digital, attenuation=0.5, noise_std=0.1):
-    """Pass a signal through the chain of Definition 1.2 (all samples independently)."""
-    s = signal.copy()
-    for _ in range(stages):
-        received = attenuation * s + rng.normal(0, noise_std, size=s.shape)
-        if digital:
-            s = np.where(received >= 0, 1.0, -1.0)   # regenerate: decide +1 or -1
-        else:
-            s = received / attenuation                # amplify: undo the loss
-    return s
-
-bits = rng.integers(0, 2, size=40)
-waveform = np.repeat(2.0 * bits - 1, 20)              # each bit lasts 20 samples
-
-analog_out = send_through_link(waveform, stages=10, digital=False)
-digital_out = send_through_link(waveform, stages=10, digital=True)
-```
-
-```{python}
-#| label: fig-regeneration
-#| fig-cap: "The same bit sequence after ten cable stretches. Analog repeaters accumulate noise; digital repeaters regenerate the signal at every step."
-fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True, sharey=True)
-for ax, out, title in zip(axes, [analog_out, digital_out],
-                          ["10 analog repeaters", "10 digital repeaters"]):
-    ax.plot(waveform, color="0.75", lw=3, label="transmitted")
-    ax.plot(out, lw=1, label="received")
-    ax.set_title(title, fontsize=10)
-axes[0].legend(loc="upper right", fontsize=8)
-axes[1].set_xlabel("sample")
-plt.tight_layout()
-plt.show()
-```
-
-The picture can be made quantitative. Write $\mathcal{Q}(z) = P(Z > z)$ for the
-tail probability of a standard Gaussian variable $Z$.
-
-::: {#prp-repeaters}
-## Analog versus digital repeaters
-
-In the model of @def-repeater-chain:
-
-1. With analog repeaters, $s_K = s_0 + \frac{1}{a}\sum_{k=1}^{K} w_k$: the
-   output is the input plus Gaussian noise of variance $K\sigma^2/a^2$. If the
-   receiver decides by the sign of $s_K$, it is wrong with probability
-   $\mathcal{Q}\big(a/(\sigma\sqrt{K})\big)$.
-2. With digital repeaters, each stage flips the symbol with probability
-   $p = \mathcal{Q}(a/\sigma)$, independently of the other stages, and the
-   final symbol is wrong with probability
-   $$
-   P_K = \frac{1 - (1 - 2p)^K}{2} \;\leq\; K p .
-   $$
-:::
-
-::: {.proof}
-(1) By induction, $s_k = s_{k-1} + w_k/a = s_0 + \frac1a\sum_{j\le k} w_j$. A sum
-of independent Gaussians is Gaussian and the variances add. The decision is
-wrong when the noise has the sign opposite to $s_0$ and magnitude above 1, which
-by symmetry has probability $P(Z > a/(\sigma\sqrt{K}))$.
-
-(2) If $s_{k-1} = +1$, the stage errs when $a + w_k < 0$, that is, when
-$w_k < -a$, with probability $\mathcal{Q}(a/\sigma)$; the case $s_{k-1} = -1$
-is symmetric. The events depend on different $w_k$, so they are independent.
-The output is wrong when the number of flips is odd. With $q = 1 - p$, the
-binomial theorem gives $(q + p)^K - (q - p)^K = 2\sum_{j \text{ odd}}
-\binom{K}{j} p^j q^{K-j}$, which is the formula for $P_K$. The bound follows
-from $P(\bigcup_k A_k) \le \sum_k P(A_k)$, since an odd number of flips needs
-at least one.
-:::
-
-With the values of the figure ($a = 0.5$, $\sigma = 0.1$, $K = 10$) the
-difference is dramatic. We compare the formulas with a simulation of one
-million symbols:
-
-```{python}
-a, sigma, K = 0.5, 0.1, 10
-Qf = stats.norm.sf                                 # Q(z) = P(Z > z)
-
-p = Qf(a / sigma)
-predicted_analog = Qf(a / (sigma * np.sqrt(K)))
-predicted_digital = (1 - (1 - 2 * p) ** K) / 2
-
-symbols = rng.choice([-1.0, 1.0], size=1_000_000)
-measured_analog = np.mean(np.sign(send_through_link(symbols, K, digital=False)) != symbols)
-measured_digital = np.mean(send_through_link(symbols, K, digital=True) != symbols)
-
-print(f"analog : predicted {predicted_analog:.2e}, measured {measured_analog:.2e}")
-print(f"digital: predicted {predicted_digital:.2e}, measured {measured_digital:.2e}")
-```
-
-The analog link gets about one symbol in twenty wrong. The digital link is
-expected to make about three errors in a million symbols, so a measurement of
-a few errors, or none, is consistent with the prediction. Adding stages makes
-the analog error probability tend to $1/2$, which means pure guessing, while the
-digital one grows at most linearly, with a tiny slope $p$.
-
-The same reasoning explains why a copy of a copy of a music file is identical
-to the original, while a copy of a copy of a cassette tape gets noisier every
-time. It is also the reason why modern systems, even radios, move to the
-digital domain as early as possible and come back to the analog world only at
-the very end. When an occasional wrong decision is not acceptable,
-error-correcting codes add redundancy so that the receiver can detect and fix
-it; this is the domain of information theory [@shannon1948]. In @sec-modem we
-build a complete digital transmitter and receiver and measure how often it
-makes mistakes.
+Digital files can be copied exactly. Over a noisy link, a receiver must first
+decide which symbols were sent. @sec-modem-repeaters compares a chain that
+amplifies the received waveform with one that makes a fresh decision at every
+stage.
 
 ## The big picture
 
@@ -655,17 +488,18 @@ is a list of numbers; Part IV returns to the edges.
   produce the same samples (@prp-sampled-sinusoid-alias): this is
   **aliasing**. A mean computed from samples can be biased by a component
   that aliases to frequency zero (@prp-full-period-average).
-- The **sampling theorem** (@thm-sampling-preview): a finite-energy signal
-  without frequencies above $f_{\max}$ is determined by samples taken at
+- The **sampling theorem** (@thm-sampling-preview): a continuous, absolutely integrable signal
+  with an absolutely integrable spectrum supported in $[-f_{\max},f_{\max}]$ is determined by samples taken at
   $F_s > 2 f_{\max}$, and the sinc formula rebuilds it.
 - **Quantization** to $B$ bits has an error of at most half a step inside the
   range (@prp-quantization-error-bound); for a uniformly distributed input
-  the SNR is exactly $6.02B$ dB, that is 6.02 dB per bit (@prp-six-db-per-bit).
-- Regeneration stops noise from accumulating: over $K$ stages, the error
-  probability of a digital link is at most $K$ times that of one stage
-  (@prp-repeaters), while an analog link loses SNR linearly in $K$.
+  each extra bit adds about 6.02 dB of SNR (@prp-six-db-per-bit).
+- A digital link can regenerate symbols by making fresh decisions at each
+  stage (@sec-modem-repeaters).
 
 ## Exercises
+
+See @sec-solution-01 for a worked solution.
 
 1. **Exact averages.** For the temperature model @eq-temperature, use
    @prp-full-period-average to find all sampling intervals $T_s$ that divide
@@ -679,19 +513,11 @@ is a list of numbers; Part IV returns to the edges.
 3. **Sine instead of cosine.** Show that $\sin(2\pi f n/F_s)$ and
    $\sin(2\pi(F_s - f) n/F_s)$ have opposite signs for every $n$. What does
    this say about the phase of an alias?
-4. **SNR of a sinusoid.** Repeat the SNR measurement with
-   $x[n] = \cos(\omega_0 n)$ for $\omega_0 = 0.1$ and $B = 4, 8, 12, 16$.
-   Compare the result with $6.02B + 1.76$ dB. What happens with amplitude
-   $0.1$ instead of 1? Express the loss in dB as a function of the amplitude.
-5. **Overload.** For $X$ Gaussian with mean 0 and standard deviation $s$,
+4. **Overload.** For $X$ Gaussian with mean 0 and standard deviation $s$,
    quantized with 8 bits on $[-1, 1]$, plot the measured SNR as a function of
    $s \in [0.01, 2]$. Explain the maximum: what limits the SNR for small $s$,
    and what for large $s$?
-6. **Repeaters.** Using @prp-repeaters with $a = 0.5$, find the largest
-   $\sigma$ for which a 100-stage digital link has an error probability below
-   $10^{-6}$. With the same $\sigma$, what is the error probability of the
-   analog link? Verify both numbers by simulation.
-7. **Bits for a sensor.** A temperature sensor covers $-40$ °C to $+60$ °C with
+5. **Bits for a sensor.** A temperature sensor covers $-40$ °C to $+60$ °C with
    an accuracy of $\pm 0.1$ °C. Find the smallest $B$ such that the
    quantization error never exceeds $0.05$ °C, a quarter of the width of the
    sensor's uncertainty interval.

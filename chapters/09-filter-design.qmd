@@ -1,3 +1,11 @@
+---
+resources:
+  - data/guitar-e4.wav
+pyodide:
+  resources:
+    - data/guitar-e4.wav
+---
+
 # Filter Design {#sec-filter-design}
 
 @sec-lti and @sec-z-transform analysed filters that were given. This chapter
@@ -188,8 +196,9 @@ If $h$ is real with length $N$ and $h[n] = h[N - 1 - n]$ for all $n$, then
 $$
 H(e^{j\omega}) = e^{-j\omega\frac{N-1}{2}}A(\omega)
 $$
-with $A(\omega)$ real. The filter delays every frequency by the same
-$(N-1)/2$ samples (its **group delay** is constant).
+with $A(\omega)$ real. On each interval where $A$ is nonzero, the **group delay**
+$-\frac{d}{d\omega}\arg H(e^{j\omega})$ is $(N-1)/2$ samples. The phase can jump
+by $\pi$ where $A$ changes sign, and the group delay is undefined at a zero.
 :::
 
 ::: {.proof}
@@ -314,23 +323,73 @@ functions `buttord`, `cheb1ord` and `ellipord` find the minimum order for a
 specification, and `butter`, `cheby1` and `ellip` design the filter.
 
 ```{python}
-gpass = 20 * np.log10((1 + delta) / (1 - delta))                # passband ripple in dB
-print("design          order   multiplications per sample")
-for name, ordfn in [("Butterworth", signal.buttord), ("Chebyshev I", signal.cheb1ord),
-                    ("elliptic", signal.ellipord)]:
-    order = ordfn(0.25, 0.30, gpass, 60)[0]
-    print(f"{name:13s} {order:6d}   {2 * order + 1:6d}")
-print(f"{'FIR (remez)':13s} {N_remez - 1:6d}   {N_remez:6d}")
+gain = 1 + delta
+gpass = 20 * np.log10(gain / (1 - delta))
+gstop = 20 * np.log10(gain / delta)
+passband = np.linspace(0, 0.25, 16385)
+stopband = np.linspace(0.30, 1, 16385)
+designs = [("Butterworth", signal.buttord, signal.butter),
+           ("Chebyshev I", signal.cheb1ord, signal.cheby1),
+           ("elliptic", signal.ellipord, signal.ellip)]
+print("design          order   min passband   max passband   max stopband")
+for name, order_fn, design_fn in designs:
+    order, critical = order_fn(0.25, 0.30, gpass, gstop)
+    ripple_args = {"Butterworth": (), "Chebyshev I": (gpass,),
+                   "elliptic": (gpass, gstop)}[name]
+    sections = design_fn(order, *ripple_args, critical, output="sos")
+    sections[0, :3] *= gain
+    _, h_pass = signal.sosfreqz(sections, worN=passband, fs=2)
+    _, h_stop = signal.sosfreqz(sections, worN=stopband, fs=2)
+    low, high = np.min(abs(h_pass)), np.max(abs(h_pass))
+    stop = np.max(abs(h_stop))
+    print(f"{name:13s} {order:6d}   {low:12.6f}   {high:12.6f}   {stop:12.6f}")
+    assert low >= 1 - delta - 1e-10 and high <= gain + 1e-10
+    assert stop <= delta + 1e-10
+print(f"FIR (remez) order: {N_remez - 1}")
 ```
 
-The elliptic filter meets the specification with a handful of coefficients
-instead of more than a hundred. The price is phase: an IIR filter delays
+SciPy measures the allowed passband loss from unity. We rescale each design by
+$1+\delta_p$ and tighten the design stopband by the same gain before rescaling.
+The table checks both bands on a dense grid, including their edges.
+
+The elliptic filter meets the magnitude specification at a much lower order than the FIR. The price is phase: an IIR filter delays
 different frequencies differently, which distorts waveforms. When the whole
 signal is available, `signal.filtfilt` runs the filter forwards and then
-backwards, which cancels the phase entirely at the cost of causality. The rule
+backwards. For real coefficients the combined response away from the ends
+of the record has zero phase and magnitude $|H|^2$, so the attenuation in
+decibels doubles. End transients depend on the padding and initial conditions.
+Use `sosfiltfilt` when the filter is represented by second-order sections. The rule
 of thumb is: **IIR when magnitude is all that matters and computation is
 scarce; FIR when phase matters, or when the filter must be simple and
 unconditionally stable.**
+
+### Extension: prewarping a cutoff
+
+Consider a one-pole analog low-pass $y'(t)=\Omega_c(x(t)-y(t))$ with analog
+cutoff $\Omega_c$ in rad/s. Approximate the integral of the right-hand side
+over one sample interval by the trapezoidal rule. The resulting recurrence is
+
+$$
+y[n]-y[n-1] = \frac{T\Omega_c}{2}\big(x[n]+x[n-1]-y[n]-y[n-1]\big).
+$$
+
+Taking its z-transform is equivalent to replacing the continuous derivative
+variable by $(2/T)(1-z^{-1})/(1+z^{-1})$ in the prototype. On the unit circle
+this is $j(2/T)\tan(\omega/2)$, so frequencies warp as they approach Nyquist.
+To place a digital cutoff at $f_c$ Hz use the analog cutoff
+$\Omega_c=2F_s\tan(\pi f_c/F_s)$. Test this against the prototype whose cutoff
+is simply $2\pi f_c$.
+
+```{python}
+rate_warp, target_warp = 8000, 2500
+for label, analog_cutoff in (("direct", 2 * np.pi * target_warp),
+                             ("prewarped", 2 * rate_warp * np.tan(np.pi * target_warp / rate_warp))):
+    b_warp, a_warp = signal.bilinear([analog_cutoff], [1, analog_cutoff], fs=rate_warp)
+    _, response_warp = signal.freqz(b_warp, a_warp, worN=[target_warp], fs=rate_warp)
+    print(f"{label:9s}: {20 * np.log10(abs(response_warp[0])):.2f} dB at {target_warp} Hz")
+    if label == "prewarped":
+        assert np.isclose(abs(response_warp[0]), 1 / np.sqrt(2))
+```
 
 ## Structures and numerical precision
 
@@ -398,6 +457,146 @@ plt.show()
 :::
 ::::
 
+::: {.content-visible when-format="pdf"}
+**Try it.** Keep the attenuation fixed and halve the transition width. Estimate the Kaiser length before running the code. The estimate should be close to twice the original length.
+:::
+
+## Lab: filtering a recording in blocks {#sec-block-lab}
+
+Use the same [guitar recording](data/guitar-e4.wav) [@freepatsguitar] and
+controlled interference as @sec-spectral-lab. The test request is at least
+40 dB of attenuation between 118 and 124 Hz, with magnitude within 2 % of
+unity between 250 Hz and 6 kHz. We will compare a long linear-phase FIR and
+a low-order IIR. For each design, the block implementation must agree with
+the same causal filter run on the whole recording from rest.
+
+```{python}
+from scipy.io import wavfile
+from scipy.fft import next_fast_len
+from time import perf_counter
+
+rate_block, guitar_pcm = wavfile.read("data/guitar-e4.wav")
+guitar = 0.8 * guitar_pcm.astype(float) / 32768
+hum = 0.04 * np.cos(2 * np.pi * 120.7 * np.arange(len(guitar)) / rate_block + 0.3)
+recording = guitar + hum
+fir = signal.firwin(4097, [85, 160], pass_zero="bandstop", window="hann", fs=rate_block)
+iir = signal.butter(4, [95, 150], btype="bandstop", fs=rate_block, output="sos")
+stop_grid = np.linspace(118, 124, 257)
+pass_grid = np.linspace(250, 6000, 2049)
+for label, response in (
+    ("FIR", signal.freqz(fir, worN=np.r_[stop_grid, pass_grid], fs=rate_block)[1]),
+    ("IIR", signal.sosfreqz(iir, worN=np.r_[stop_grid, pass_grid], fs=rate_block)[1]),
+):
+    stop_peak = np.max(abs(response[:len(stop_grid)]))
+    pass_error = np.max(abs(abs(response[len(stop_grid):]) - 1))
+    print(f"{label}: minimum rejection {-20 * np.log10(stop_peak):.1f} dB, "
+          f"worst passband deviation {100 * pass_error:.2f}%")
+    assert stop_peak <= 0.01 and pass_error <= 0.02
+```
+
+### FIR with overlap-add
+
+A block of $B$ samples produces at most $B+M-1$ nonzero samples through
+an $M$-tap FIR. Use an FFT long enough for linear convolution and add
+each block's result to the pending tail. This implements superposition even
+when several tails overlap. Future input cannot change the first $B$ outputs
+after the current addition. Emit them and carry the remaining $M-1$ samples
+to the next block. The wrapper below collects the emitted blocks for comparison
+with the whole-record reference.
+
+```{python}
+def fir_stream(chunks, taps, block):
+    size = next_fast_len(block + len(taps) - 1, real=True)
+    response = np.fft.rfft(taps, size)
+    pending = np.zeros(len(taps) - 1)
+    for chunk in chunks:
+        count = len(chunk) + len(taps) - 1
+        filtered = np.fft.irfft(np.fft.rfft(chunk, size) * response, size)[:count]
+        filtered[:len(pending)] += pending
+        pending = filtered[len(chunk):].copy()
+        yield filtered[:len(chunk)].copy()
+
+def fir_blocks(x, taps, block):
+    chunks = (x[start:start + block] for start in range(0, len(x), block))
+    return np.concatenate(list(fir_stream(chunks, taps, block)))
+```
+
+### IIR with state carried across blocks
+
+In a cascade, the two state values per section summarise the past. Pass
+the final state returned by `sosfilt` back as `zi` on the next call.
+Reinitialising it per chunk makes a different filter. The nominal block
+duration $B/F_s$ is the time available per update, and collecting a complete
+block can make its first sample wait nearly that long before computation
+begins. The linear phase FIR adds $(M-1)/(2F_s)$ of waveform delay.
+An IIR has a frequency-dependent delay, so we leave its response sample-aligned.
+
+```{python}
+def sos_blocks(x, sections, block, reset=False):
+    initial = np.zeros((len(sections), 2))
+    state = initial
+    output = np.empty_like(x, dtype=float)
+    for start in range(0, len(x), block):
+        span = slice(start, start + block)
+        output[span], state = signal.sosfilt(sections, x[span], zi=initial if reset else state)
+    return output
+
+reference_fir = signal.lfilter(fir, [1], recording)
+reference_iir = signal.sosfilt(iir, recording)
+print(f"FIR waveform delay: {1000 * (len(fir) - 1) / (2 * rate_block):.2f} ms")
+for size in (128, 511, 2048):
+    for label, process, model, expected in (
+        ("FIR", fir_blocks, fir, reference_fir), ("IIR", sos_blocks, iir, reference_iir),
+    ):
+        started = perf_counter()
+        result = process(recording, model, size)
+        elapsed = perf_counter() - started
+        per_block = elapsed / ((len(recording) + size - 1) // size)
+        worst = np.max(abs(result - expected))
+        print(f"{label}, {size:4d} samples: {worst:.2e} peak error, "
+              f"{1000 * per_block:.3f} ms mean compute per {1000 * size / rate_block:.2f} ms block")
+        assert np.allclose(result, expected, atol=1e-11)
+```
+
+These timings include the filter call overhead and depend on the machine.
+An audio callback would also measure worst-case time and handle a tail at
+the end of the stream. Here the last partial block already contributes
+correctly over the recorded time interval.
+
+**Your turn.** Try a block length that divides neither the FIR length nor
+the recording length. Then turn off state transfer and find where the error
+is largest. To measure rejection separately from waveform changes, run the
+same filter on the control and subtract its output from the test output.
+Skip the initial transient and measure the residual interference against
+the injected tone.
+
+```{python}
+#| label: fig-block-lab-state
+#| fig-cap: "The IIR starts a new transient at each boundary when the state is reset. The continuous block implementation follows the whole-record reference."
+trial_size = 511
+reset_output = sos_blocks(recording, iir, trial_size, reset=True)
+continued = sos_blocks(recording, iir, trial_size)
+skip = slice(rate_block // 2, None)
+for label, process, model in (("FIR", fir_blocks, fir), ("IIR", sos_blocks, iir)):
+    residual = process(recording, model, trial_size) - process(guitar, model, trial_size)
+    rejection = 20 * np.log10(np.linalg.norm(residual[skip]) / np.linalg.norm(hum[skip]))
+    print(f"{label}: interference residual {rejection:.1f} dB relative to input tone")
+    assert rejection < -40
+display_samples = np.arange(8 * trial_size)
+fig, ax = plt.subplots()
+ax.plot(display_samples, (reset_output - reference_iir)[display_samples], label="reset")
+ax.plot(display_samples, (continued - reference_iir)[display_samples], label="carried state")
+for boundary in display_samples[::trial_size]:
+    ax.axvline(boundary, color="0.8", lw=0.5)
+ax.set(xlabel="sample", ylabel="error (full-scale units)")
+ax.legend()
+plt.show()
+```
+
+The rejection check uses a paired control. To judge waveform fidelity,
+compare against the original clean guitar too, compensating the FIR delay
+and keeping the IIR's frequency-dependent phase in mind.
+
 ## Summary
 
 - A specification fixes passband and stopband edges and tolerances
@@ -416,6 +615,8 @@ plt.show()
   sections: direct forms are numerically fragile.
 
 ## Exercises
+
+See @sec-solution-09 for a worked solution.
 
 1. **The ideal high-pass filter.** Find the impulse response of the ideal
    high-pass filter with cut-off $\omega_c$ in terms of that of the ideal

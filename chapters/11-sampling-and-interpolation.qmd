@@ -128,8 +128,7 @@ absolutely integrable. If $F_s = 1/T > 2B$, then for every real $t$
 $$
 x(t) = \sum_{n=-\infty}^{\infty}x(nT)\,\operatorname{sinc}\!\left(\frac{t - nT}{T}\right),
 $$
-where the series converges in the mean-square sense and, for the signals in
-this book, at every $t$.
+where the symmetric partial sums converge uniformly in $t$ and in energy.
 :::
 
 ::: {.proof}
@@ -155,6 +154,11 @@ x(t) &= \int_{-F_s/2}^{F_s/2}X(f)e^{j2\pi ft}df\\
 \end{aligned}
 $$
 using $\int_{-F_s/2}^{F_s/2}e^{j2\pi fu}df = F_s\operatorname{sinc}(F_su)$.
+For a partial sum $S_M$ of the series for $X$, the absolute reconstruction
+error at any $t$ is at most $\sqrt{F_s}\,\|X-S_M\|_{L^2([-F_s/2,F_s/2])}$
+by Cauchy–Schwarz. This bound tends to zero independently of $t$. Extending
+$S_M$ by zero off that interval and applying @thm-plancherel gives convergence
+in energy as well.
 :::
 
 The proof shows *why* the theorem works: the samples, up to the factor $T$, are
@@ -395,6 +399,31 @@ plt.show()
 :::
 ::::
 
+### Extension: when the clock moves
+
+If the clock's sampling instant moves by $\varepsilon[n]$ seconds, the
+sample error is $x(nT+\varepsilon[n])-x(nT)$. Taylor's formula gives the
+first-order approximation $x'(nT)\varepsilon[n]$. The same timing error
+therefore affects a fast-changing waveform more strongly. For a tone of
+amplitude 1, the peak slope is $2\pi f$. Compare two tones at equal amplitude
+and the same illustrative pattern of clock deviations.
+
+```{python}
+rate_clock = 48_000
+clock_n = np.arange(rate_clock)
+nominal = clock_n / rate_clock
+clock_error = 100e-9 * np.where(clock_n % 2 == 0, 1, -1)
+for clock_tone in (1000, 10000):
+    phase = 2 * np.pi * clock_tone * nominal
+    error_clock = np.sin(2 * np.pi * clock_tone * (nominal + clock_error)) - np.sin(phase)
+    linear_error = 2 * np.pi * clock_tone * np.cos(phase) * clock_error
+    assert np.max(abs(error_clock - linear_error)) <= (2 * np.pi * clock_tone * 100e-9)**2 / 2
+    print(f"{clock_tone:5d} Hz: clock-induced RMS error {np.sqrt(np.mean(error_clock**2)):.6f}")
+```
+
+These errors exist even before amplitude is rounded. @sec-quantization
+changes the sample values on an ideal clock and models that error separately.
+
 ## Summary
 
 - A signal is bandlimited to $B$ if its Fourier transform vanishes outside
@@ -414,6 +443,8 @@ plt.show()
   (@prp-ideal-differentiator), the fractional delay $h[n] = \operatorname{sinc}(n - d)$.
 
 ## Exercises
+
+See @sec-solution-11 for a worked solution.
 
 1. **Interpolation errors.** For the test signal, plot the maximum
    interpolation error of the hold and the linear interpolator as a function of

@@ -27,4 +27,5 @@ Copyright (c) 2026 Antonio Flores Gil.
   > USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Third-party components keep their own licenses, notably the Quarto Live
-extension in `_extensions/r-wasm/live/` (MIT).
+extension in `_extensions/r-wasm/live/` (MIT). See [the data credits](chapters/data/README.md)
+for the licenses of the recordings distributed with the book.

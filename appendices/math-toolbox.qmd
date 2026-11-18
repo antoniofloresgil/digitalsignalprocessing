@@ -96,6 +96,18 @@ For vectors in $\mathbb{C}^N$ with $\langle\mathbf{x},\mathbf{y}\rangle = \sum x
 In every case: delays become multiplications by a phase factor, convolution
 becomes multiplication, and energy is preserved up to a constant (Parseval).
 
+## Frequency and level conventions {#sec-frequency-level-conventions}
+
+| Quantity | Convention used here |
+| --- | --- |
+| Sample rate and digital frequency | $F_s$ is in Hz and $\omega=2\pi f/F_s$ is in rad/sample. One period of digital frequency spans $2\pi$. |
+| DFT bins | For $N$ samples, the spacing is $F_s/N$. A two-sided display places bins at positive and negative frequencies. |
+| One-sided display | For real signals, add negative-frequency power to its positive partner. DC and, for even $N$, Nyquist each occur only once. To measure peak amplitude, calibrate the tone's coefficient using the window gain. |
+| Decibels | Use $10\log_{10}$ of a power ratio or $20\log_{10}$ of an amplitude ratio at the same impedance. State the reference when plotting a level. |
+| dBFS and density | A peak of 1 in normalised PCM units is 0 dBFS. A PSD calculated in Hz has squared signal units per Hz. Its integral over a band is power in that band. |
+
+@sec-spectral-lab puts these conventions into practice.
+
 ## Probability
 
 | notion | definition | NumPy / SciPy |
@@ -136,3 +148,16 @@ amplitude. Values worth remembering:
 | 60 | $10^6$ | 1000 |
 
 : Common decibel values. {#tbl-decibels}
+
+## Find a topic
+
+| If you are looking for | Start here |
+| --- | --- |
+| Aliasing and changes of sample rate | @thm-aliasing, @sec-multirate |
+| Correlation and pulse detection | @def-correlation, @thm-matched-filter |
+| Bins, window gain and spectral density | @sec-frequency-level-conventions, @sec-spectral-lab |
+| Frequency response, stability and delay | @thm-eigenfunctions, @thm-stability-poles, @prp-linear-phase |
+| Causal processing and block state | @prp-causality, @sec-block-lab |
+| Quantization and dither | @def-uniform-quantizer, @sec-quantization |
+| Oscillator and timing recovery | @sec-modem-sync, @sec-sdr-stereo |
+| Fourier proofs and exercise solutions | @sec-advanced-proofs, @sec-selected-solutions |

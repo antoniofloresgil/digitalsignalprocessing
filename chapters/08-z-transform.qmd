@@ -386,6 +386,8 @@ print("freqz agrees with the distances to poles and zeros")
 
 ## Exercises
 
+See @sec-solution-08 for a worked solution.
+
 1. **Transforms with ROC.** Compute the z-transform and the ROC of
    $x[n] = 0.5^nu[n] + 2^nu[-n-1]$. Is there a stable signal with the same
    formula but a different ROC? Which one?

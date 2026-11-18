@@ -57,11 +57,11 @@ def fractional_delay(x, d):
     w = 2 * np.pi * np.fft.rfftfreq(2 * N)
     return np.fft.irfft(X * np.exp(-1j * w * d), 2 * N)[:N]
 
-def telephone_line(s, delay, noise_var):
+def telephone_line(s, delay, noise_var, noise_rng=rng):
     s = np.r_[np.zeros(200), s, np.zeros(400)]                        # silence around the frame
     s = fractional_delay(s, delay)
     s = np.convolve(s, h_line)[: len(s)]
-    return s + rng.normal(0, np.sqrt(noise_var), len(s))
+    return s + noise_rng.normal(0, np.sqrt(noise_var), len(s))
 ```
 
 ## The transmitter
@@ -349,13 +349,18 @@ def measure_ber(mapper, demapper, bits_per_symbol, ebn0_db, n_symbols=40_000):
     noise_var = 1 / (2 * bits_per_symbol * 10 ** (ebn0_db / 10))     # sigma^2 = N0/2, N0 = Es/(bits * Eb/N0)
     y = demodulate(telephone_line(transmit(mapper(bits)), 0.0, noise_var), phase=line_phase)
     z = y[total_delay::K][:n_symbols]
-    return np.mean(demapper(z) != bits)
+    return int(np.count_nonzero(demapper(z) != bits)), len(bits)
 
 ebn0 = np.arange(0, 13, 2)
-ber_qpsk = [measure_ber(qpsk_map, qpsk_demap, 2, e) for e in ebn0]
-ber_16 = [measure_ber(qam16_map, qam16_demap, 4, e) for e in ebn0]
+counts_qpsk = np.array([measure_ber(qpsk_map, qpsk_demap, 2, e) for e in ebn0])
+counts_16 = np.array([measure_ber(qam16_map, qam16_demap, 4, e) for e in ebn0])
+ber_qpsk = counts_qpsk[:, 0] / counts_qpsk[:, 1]
+ber_16 = counts_16[:, 0] / counts_16[:, 1]
 theory_qpsk = Qf(np.sqrt(2 * 10 ** (ebn0 / 10)))
 theory_16 = 0.75 * Qf(np.sqrt(0.8 * 10 ** (ebn0 / 10)))
+print("Eb/N0 (dB)     QPSK errors/bits      16-QAM errors/bits")
+for e, (errors_q, bits_q), (errors_16, bits_16) in zip(ebn0, counts_qpsk, counts_16):
+    print(f"{e:10d}     {errors_q:5d}/{bits_q:<8d}     {errors_16:5d}/{bits_16:<8d}")
 
 fig, ax = plt.subplots()
 ax.semilogy(ebn0, theory_qpsk, label="QPSK theory"); ax.semilogy(ebn0, ber_qpsk, "o", color="C0")
@@ -368,8 +373,9 @@ for e, measured, theory in zip(ebn0, ber_qpsk, theory_qpsk):
         assert abs(measured / theory - 1) < 0.25, (e, measured, theory)
 ```
 
-The measurements follow the theory: the line, the pulses and the matched filter
-behave as the model predicts. The remaining work is to make the receiver find
+The sizeable error counts let us compare measured rates with the model. A
+zero count only says that this trial found no errors in its finite bit sample.
+The remaining work is to make the receiver find
 the right instants and the right carrier phase by itself.
 
 ## Synchronisation {#sec-modem-sync}
@@ -405,7 +411,7 @@ the current phase estimate, decides the symbol, measures the remaining phase
 error $e_k = \arg(z_k\hat a_k^*)$ against the decision, and corrects its phase and
 frequency estimates by small fractions of $e_k$:
 $$
-\phi_{k+1} = \phi_k + f_k + \alpha e_k, \qquad f_{k+1} = f_k + \beta e_k .
+f_{k+1} = f_k + \beta e_k, \qquad \phi_{k+1} = \phi_k + f_{k+1} + \alpha e_k .
 $$
 This second-order loop is itself a small recursive filter acting on the phase
 errors; its gains $\alpha$, $\beta$ set how fast it reacts and how much noise it lets
@@ -464,6 +470,26 @@ print(f"bit errors: {errors} out of {len(payload)}")
 assert text == message and errors == 0
 ```
 
+For independent checks, change both the channel conditions and the payload.
+The receiver is given the preamble and frame length. The injected oscillator
+offsets act in its mixer. Its synchroniser estimates the resulting rotation
+from the samples using the preamble and tracks it through the payload.
+
+```{python}
+validation_rng = np.random.default_rng(1414)
+print("delay (samples)   offset (Hz)    start    payload errors / bits")
+for delay, offset, phase in ((11.2, -3.0, -0.8), (26.6, 0.5, 2.1), (54.1, 2.5, -1.4)):
+    trial_bits = validation_rng.integers(0, 2, 2048).astype(np.uint8)
+    trial_frame = np.r_[preamble, qam16_map(trial_bits)]
+    capture = telephone_line(transmit(trial_frame), delay, 1 / (2 * 10**2.5),
+                             noise_rng=validation_rng)
+    symbols_rx, first, _ = receive(capture, preamble, len(trial_frame),
+                                   f_offset=offset, phase=phase)
+    bad = np.count_nonzero(qam16_demap(symbols_rx[len(preamble):]) != trial_bits)
+    print(f"{delay:14.1f}   {offset:11.1f}   {first:6d}   {bad:6d} / {len(trial_bits)}")
+    assert abs(first - (total_delay + delay)) <= 1
+```
+
 ```{python}
 #| label: fig-sync
 #| fig-cap: "The received samples of the end-to-end experiment, before carrier recovery (left: the 2 Hz offset makes the constellation spin into rings) and after the least-squares estimate and the PLL (right: the 16 points of the constellation)."
@@ -520,6 +546,132 @@ plt.show()
 :::
 ::::
 
+## Extension: regenerating a signal over a long link {#sec-modem-repeaters}
+
+Turning signals into numbers adds work and a small error. The reward is that
+numbers can be copied, stored and transmitted **without degradation**.
+
+Think about a long cable that carries a signal across an ocean. The cable
+weakens the signal, so every few kilometres a *repeater* has to boost it again.
+Each stretch of cable also adds noise. We model the link as follows.
+
+::: {#def-repeater-chain}
+## A chain of repeaters
+
+A symbol $s_0 \in \{-1, +1\}$ is sent through $K$ stages. Stage $k$ receives
+$r_k = a\,s_{k-1} + w_k$, where $0 < a < 1$ is the attenuation of the cable and
+the noise values $w_1, \dots, w_K$ are independent Gaussian random variables
+with mean 0 and variance $\sigma^2$. Then:
+
+- an **analog repeater** amplifies: $s_k = r_k / a$;
+- a **digital repeater** regenerates: $s_k = +1$ if $r_k \geq 0$ and $s_k = -1$
+  otherwise.
+:::
+
+```{python}
+def send_through_link(signal, stages, digital, attenuation=0.5, noise_std=0.1):
+    """Pass a signal through the chain of the repeater-chain model (all samples independently)."""
+    s = signal.copy()
+    for _ in range(stages):
+        received = attenuation * s + rng.normal(0, noise_std, size=s.shape)
+        if digital:
+            s = np.where(received >= 0, 1.0, -1.0)   # regenerate: decide +1 or -1
+        else:
+            s = received / attenuation                # amplify: undo the loss
+    return s
+
+bits = rng.integers(0, 2, size=40)
+waveform = np.repeat(2.0 * bits - 1, 20)              # each bit lasts 20 samples
+
+analog_out = send_through_link(waveform, stages=10, digital=False)
+digital_out = send_through_link(waveform, stages=10, digital=True)
+```
+
+```{python}
+#| label: fig-regeneration
+#| fig-cap: "The same bit sequence after ten cable stretches. Analog repeaters accumulate noise; digital repeaters regenerate the signal at every step."
+fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True, sharey=True)
+for ax, out, title in zip(axes, [analog_out, digital_out],
+                          ["10 analog repeaters", "10 digital repeaters"]):
+    ax.plot(waveform, color="0.75", lw=3, label="transmitted")
+    ax.plot(out, lw=1, label="received")
+    ax.set_title(title, fontsize=10)
+axes[0].legend(loc="upper right", fontsize=8)
+axes[1].set_xlabel("sample")
+plt.tight_layout()
+plt.show()
+```
+
+The picture can be made quantitative. Write $\mathcal{Q}(z) = P(Z > z)$ for the
+tail probability of a standard Gaussian variable $Z$.
+
+::: {#prp-repeaters}
+## Analog versus digital repeaters
+
+In the model of @def-repeater-chain:
+
+1. With analog repeaters, $s_K = s_0 + \frac{1}{a}\sum_{k=1}^{K} w_k$: the
+   output is the input plus Gaussian noise of variance $K\sigma^2/a^2$. If the
+   receiver decides by the sign of $s_K$, it is wrong with probability
+   $\mathcal{Q}\big(a/(\sigma\sqrt{K})\big)$.
+2. With digital repeaters, each stage flips the symbol with probability
+   $p = \mathcal{Q}(a/\sigma)$, independently of the other stages, and the
+   final symbol is wrong with probability
+   $$
+   P_K = \frac{1 - (1 - 2p)^K}{2} \;\leq\; K p .
+   $$
+:::
+
+::: {.proof}
+(1) By induction, $s_k = s_{k-1} + w_k/a = s_0 + \frac1a\sum_{j\le k} w_j$. A sum
+of independent Gaussians is Gaussian and the variances add. The decision is
+wrong when the noise has the sign opposite to $s_0$ and magnitude above 1, which
+by symmetry has probability $P(Z > a/(\sigma\sqrt{K}))$.
+
+(2) If $s_{k-1} = +1$, the stage errs when $a + w_k < 0$, that is, when
+$w_k < -a$, with probability $\mathcal{Q}(a/\sigma)$; the case $s_{k-1} = -1$
+is symmetric. The events depend on different $w_k$, so they are independent.
+The output is wrong when the number of flips is odd. With $q = 1 - p$, the
+binomial theorem gives $(q + p)^K - (q - p)^K = 2\sum_{j \text{ odd}}
+\binom{K}{j} p^j q^{K-j}$, which is the formula for $P_K$. The bound follows
+from $P(\bigcup_k A_k) \le \sum_k P(A_k)$, since an odd number of flips needs
+at least one.
+:::
+
+With the values of the figure ($a = 0.5$, $\sigma = 0.1$, $K = 10$) the
+difference is dramatic. We compare the formulas with a simulation of one
+million symbols:
+
+```{python}
+a, sigma, K = 0.5, 0.1, 10
+Qf = stats.norm.sf                                 # Q(z) = P(Z > z)
+
+p = Qf(a / sigma)
+predicted_analog = Qf(a / (sigma * np.sqrt(K)))
+predicted_digital = (1 - (1 - 2 * p) ** K) / 2
+
+symbols = rng.choice([-1.0, 1.0], size=1_000_000)
+measured_analog = np.mean(np.sign(send_through_link(symbols, K, digital=False)) != symbols)
+measured_digital = np.mean(send_through_link(symbols, K, digital=True) != symbols)
+
+print(f"analog : predicted {predicted_analog:.2e}, measured {measured_analog:.2e}")
+print(f"digital: predicted {predicted_digital:.2e}, measured {measured_digital:.2e}")
+```
+
+The analog link gets about one symbol in twenty wrong. The digital link is
+expected to make about three errors in a million symbols, so a measurement of
+a few errors, or none, is consistent with the prediction. Adding stages makes
+the analog error probability tend to $1/2$, which means pure guessing, while the
+digital one grows at most linearly, with a tiny slope $p$.
+
+The same reasoning explains why a copy of a copy of a music file is identical
+to the original, while a copy of a copy of a cassette tape gets noisier every
+time. It is also the reason why modern systems, even radios, move to the
+digital domain as early as possible and come back to the analog world only at
+the very end. When an occasional wrong decision is not acceptable,
+error-correcting codes add redundancy so that the receiver can detect and fix
+it; this is the domain of information theory [@shannon1948]. The frame measurements earlier in this project quantify errors for a link with a single receiver.
+
 ## Summary
 
 - A channel is characterised by its bandwidth, the power available to the
@@ -539,6 +691,8 @@ plt.show()
   frame.
 
 ## Exercises
+
+See @sec-solution-14 for a worked solution.
 
 1. **Bandwidth and roll-off.** Measure the bandwidth containing 99 % of the
    power of the transmitted signal for $\beta = 0.1, 0.35, 0.7$. How fast could
@@ -564,5 +718,11 @@ plt.show()
    noticeable slope across the band, so that intersymbol interference appears.
    Implement an LMS equaliser, an FIR filter whose coefficients are updated at
    every symbol by $\mathbf{c} \leftarrow \mathbf{c} + \mu\,e_k\,\overline{\mathbf{z}_k}$ with the
-   decision error $e_k$, train it on the preamble, and compare the constellations
+   decision error $e_k$ (see the LMS update in @sec-noise), train it on the preamble, and compare the constellations
    before and after.
+
+8. **Repeaters.** Using @prp-repeaters with $a = 0.5$, find the largest
+   $\sigma$ for which a 100-stage digital link has an error probability below
+   $10^{-6}$. With the same $\sigma$, what is the error probability of the
+   analog link? Compare the two predictions. Explain the sample size needed
+   to resolve the smaller probability in a direct Monte Carlo run.

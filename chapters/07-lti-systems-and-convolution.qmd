@@ -290,11 +290,12 @@ on $\omega$.
 
 Let $h$ be absolutely summable and let $H(e^{j\omega})$ be its DTFT, the
 **frequency response** of the filter. Then for every real $\omega$,
-$h * e^{j\omega n} = H(e^{j\omega})\,e^{j\omega n}$. If $h$ is real, then for every
-$A > 0$ and $\varphi$,
+$h * e^{j\omega n} = H(e^{j\omega})\,e^{j\omega n}$. If $h$ is real and
+$H(e^{j\omega})\ne0$, then for every $A>0$ and $\varphi$,
 $$
 h * A\cos(\omega n + \varphi) = A\,|H(e^{j\omega})|\cos\big(\omega n + \varphi + \arg H(e^{j\omega})\big).
 $$
+If $H(e^{j\omega})=0$, the cosine output is identically zero.
 :::
 
 ::: {.proof}
@@ -535,6 +536,8 @@ filter, and @sec-modem will build one.
   noise (@thm-matched-filter).
 
 ## Exercises
+
+See @sec-solution-07 for a worked solution.
 
 1. **More counterexamples.** Decide whether each system is linear,
    time-invariant, causal and stable, and prove it:

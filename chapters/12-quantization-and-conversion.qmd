@@ -2,9 +2,8 @@
 
 @sec-sampling dealt with the time axis. This chapter deals with the amplitude
 axis, and with the hardware that crosses between the analog and the digital
-worlds. @sec-what-is-dsp introduced the uniform quantizer, bounded its error
-and proved the 6 dB-per-bit rule for a uniformly distributed input. Here we
-build the model that engineers actually use, quantization error as additive
+worlds. @sec-what-is-dsp introduced the uniform quantizer and bounded its error. Here we derive the
+6 dB-per-bit rule for a uniform input, then build the model that engineers actually use, quantization error as additive
 white noise, and examine when it holds and when it fails. We then look at
 non-uniform quantization, used in telephony, and at how A/D and D/A
 converters work. The chapter corresponds to Chapter 10 of @prandoni2008.
@@ -39,6 +38,56 @@ def snr_db(x, y):
     return 10 * np.log10(np.mean(x ** 2) / np.mean((y - x) ** 2))
 ```
 
+## Quantization error for a uniform input
+
+For a uniform input on the converter range, we can compute the signal-to-noise ratio exactly. We use $10\log_{10}$ of the ratio of mean squares to express it in dB.
+
+::: {#prp-six-db-per-bit}
+## Six decibels per bit
+
+Let $X$ be uniformly distributed on $[-1, 1]$ and let $Q$ be the $B$-bit uniform
+quantizer on $[-1, 1]$. Then the error $E = Q(X) - X$ is uniformly distributed on
+$[-\Delta/2, \Delta/2]$, and
+
+$$
+\mathrm{SNR} = 4^B = 2^{2B}, \qquad
+\mathrm{SNR}_{\mathrm{dB}} = 10\log_{10}\big(4^B\big) = \big(20\log_{10}2\big)\,B \approx 6.02\,B\ \text{dB}.
+$$
+
+That is, **6.02 dB per bit**: $B$ is a number of bits and the coefficient
+$20\log_{10}2 \approx 6.02$ is in dB per bit. Conversely, a target SNR needs
+at least $\lceil \tfrac12\log_2\mathrm{SNR}\rceil$ bits, subject to the finite
+quantizer's requirement of at least one bit.
+:::
+
+::: {.proof}
+Each of the $L$ intervals has probability $1/L$, and conditioned on being in
+interval $i$, $X$ is uniform on it. In that interval $E = c_i - X$, where $c_i$ is
+the centre, so $E$ is uniform on $[-\Delta/2, \Delta/2]$ whatever $i$ is. The
+unconditional distribution is therefore the same uniform distribution. Hence
+$\mathbb{E}[E^2] = \frac{1}{\Delta}\int_{-\Delta/2}^{\Delta/2} e^2\,de = \Delta^2/12$.
+Also $\mathbb{E}[X^2] = \frac12\int_{-1}^{1} x^2\,dx = 1/3$. With $\Delta = 2/2^B$,
+$\mathrm{SNR} = (1/3)\,/\,(4/(12 \cdot 4^B)) = 4^B$.
+:::
+
+The experiment agrees with the prediction, up to the statistical error of a
+finite sample:
+
+```{python}
+uniform_rng = np.random.default_rng(121)
+x_uniform = uniform_rng.uniform(-1, 1, size=1_000_000)
+
+print(" bits   measured SNR (dB)   6.02 B (dB)")
+for bits in [2, 4, 8, 12, 16]:
+    error = quantize(x_uniform, bits) - x_uniform
+    measured = 10 * np.log10(np.mean(x_uniform**2) / np.mean(error**2))
+    print(f"{bits:5d}  {measured:14.2f}  {20 * np.log10(2) * bits:14.2f}")
+```
+
+Each extra bit halves $\Delta$, divides the error power by 4 and so adds
+$10\log_{10}4 \approx 6.02$ dB to the SNR. For signals that are not uniformly distributed
+we will examine when the uniform model remains a good approximation.
+
 ## The additive-noise model
 
 The quantizer $Q$ of @def-uniform-quantizer is a deterministic, nonlinear
@@ -55,7 +104,7 @@ uncorrelated with $x$. Its power is $\Delta^2/12$ and its PSD is flat,
 $S_e(e^{j\omega}) = \Delta^2/12$.
 :::
 
-The model is exact in one case, proved in @prp-six-db-per-bit: for an input
+The marginal distribution of the error is exactly uniform in the case of @prp-six-db-per-bit: for an input
 uniformly distributed over the range, each error sample is exactly uniform.
 In general it is an approximation, which is good when the signal is "busy":
 it crosses many quantization levels in an irregular way and stays within the
@@ -392,6 +441,8 @@ plt.ylim(1e-9, 1e-1); plt.legend(); plt.show()
 
 ## Exercises
 
+See @sec-solution-12 for a worked solution.
+
 1. **Mid-tread quantizer.** The quantizer of @def-uniform-quantizer has no level
    at 0 (*mid-rise*). Write a *mid-tread* quantizer, with a level at 0, and
    compare the outputs of both for a signal of amplitude $0.4\Delta$. Which one
@@ -417,3 +468,8 @@ plt.ylim(1e-9, 1e-1); plt.legend(); plt.show()
 7. **Droop compensation.** Design a short FIR filter that compensates the
    zero-order-hold droop to within $\pm0.1$ dB up to $0.4F_s$, and verify it in the
    simulation of @fig-zoh-dac.
+
+8. **SNR of a sinusoid.** Repeat the SNR measurement with
+   $x[n] = \cos(\omega_0 n)$ for $\omega_0 = 0.1$ and $B = 4, 8, 12, 16$.
+   Compare the result with $6.02B + 1.76$ dB. What happens with amplitude
+   $0.1$ instead of 1? Express the loss in dB as a function of the amplitude.

@@ -1,3 +1,11 @@
+---
+resources:
+  - data/guitar-e4.wav
+pyodide:
+  resources:
+    - data/guitar-e4.wav
+---
+
 # Random Signals and Noise {#sec-noise}
 
 Every signal in the real world is accompanied by noise: thermal noise in
@@ -133,8 +141,9 @@ axes[1].set_xlabel("lag $k$")
 plt.tight_layout()
 plt.show()
 
-# the statistical error of a time average over N samples is about r[0]/sqrt(N) times a small factor
-assert np.allclose(r_time, r_exact, rtol=0, atol=0.01 * r_exact[0])
+# the statistical error of a time average over N samples is of the order of r[0]/sqrt(N) times a factor that
+# grows with the correlation (about 0.4 % of r[0] here); 3 % of r[0] holds for any seed
+assert np.allclose(r_time, r_exact, rtol=0, atol=0.03 * r_exact[0])
 ```
 
 ## Power spectral density
@@ -192,15 +201,16 @@ close to $S_x$, and indeed it is not:
 
 ```{python}
 #| label: fig-periodogram
-#| fig-cap: "Periodograms of Gaussian white noise with $\\sigma^2 = 1$ from 256 and 16384 samples (top two), and Welch's estimate from the same 16384 samples (bottom). More data makes the periodogram denser, not smoother; averaging makes it converge."
+#| fig-cap: "Periodograms of Gaussian white noise with $\\sigma^2 = 1$ from 256 and 16384 samples (top two), and Welch's estimate from the same 16384 samples (bottom). More data makes this periodogram denser, and averaging reduces the variability."
 fig, axes = plt.subplots(3, 1, figsize=(7, 5.5), sharex=True, sharey=True)
 for ax, N in zip(axes[:2], [256, 16384]):
     w_noise = rng.normal(size=N)
     P = np.abs(np.fft.rfft(w_noise)) ** 2 / N
     ax.plot(np.linspace(0, np.pi, len(P)), P, lw=0.5)
     ax.set_title(f"periodogram, N = {N}: std of the estimate {P[1:-1].std():.2f}", fontsize=9)
-f, P_welch = signal.welch(w_noise, fs=2 * np.pi, nperseg=256, return_onesided=False)
-keep = f <= np.pi
+f, P_welch = signal.welch(w_noise, fs=2 * np.pi, nperseg=256,
+                          detrend=False, return_onesided=False)
+keep = (f >= 0) & (f < np.pi)
 axes[2].plot(f[keep], 2 * np.pi * P_welch[keep], lw=0.8)
 axes[2].set_title(f"Welch, segments of 256: std {(2 * np.pi * P_welch).std():.2f}", fontsize=9)
 axes[2].set_xlabel(r"$\omega$")
@@ -218,6 +228,22 @@ by a window, computes their periodograms and averages them. Averaging $M$
 roughly independent estimates divides the standard deviation by about
 $\sqrt M$, at the price of the frequency resolution of a shorter segment: the
 trade-off of @sec-spectral-analysis again. `signal.welch` implements it.
+With a fixed segment length, averaging leaves the expected windowed estimate
+unchanged. In particular a narrow peak in a coloured PSD can remain biased.
+At frequency zero, a length-$L$ window $v$ gives expected power
+$\sum_{n,m}v[n]v[m]r_x[n-m]/\sum_n v[n]^2$ by the finite-sum argument in
+@thm-wiener-khinchin. Compare it with the true PSD for a slowly decaying
+AR(1) autocorrelation.
+
+```{python}
+ar = 0.95
+for length in (32, 128, 512):
+    k = np.arange(length)
+    window = signal.windows.hann(length, sym=False)
+    covariance = ar ** np.abs(k[:, None] - k) / (1 - ar**2)
+    expected_dc = (window @ covariance @ window) / (window @ window)
+    print(f"{length:3d} samples: expected DC {expected_dc:6.1f}, true PSD {1 / (1 - ar)**2:.1f}")
+```
 
 A note on units: with `fs=2*np.pi` and `return_onesided=False`, `welch` returns a
 density per radian whose integral over $[-\pi, \pi)$ is the power; multiplying by
@@ -326,11 +352,15 @@ w_out = np.convolve(w_noise, h)[delay: delay + N]
 r_out = s_out + w_out
 
 snr_in = 10 * np.log10(np.mean(s ** 2) / np.mean(w_noise ** 2))
-snr_out = 10 * np.log10(np.mean(s[500:-500] ** 2) / np.mean((r_out - s)[500:-500] ** 2))
+interior = slice(500, -500)
+snr_out = 10 * np.log10(np.mean(s_out[interior] ** 2) / np.mean(w_out[interior] ** 2))
+reconstruction_db = 10 * np.log10(np.mean(s[interior] ** 2) /
+                                  np.mean((r_out - s)[interior] ** 2))
 predicted_noise = sigma2 * np.sum(h ** 2)                        # Theorem: σ² Σ h²
-print(f"SNR in {abs(snr_in):.1f} dB (measured {snr_in:+.3f}), out {snr_out:.1f} dB")
+print(f"SNR in {snr_in:+.3f} dB, SNR out {snr_out:.1f} dB")
+print(f"original signal to reconstruction error: {reconstruction_db:.1f} dB")
 print(f"noise power after the filter: measured {np.mean(w_out ** 2):.4f}, predicted {predicted_noise:.4f}")
-assert np.isclose(np.mean(w_out[500:-500] ** 2), predicted_noise, rtol=0.03)
+assert np.isclose(np.mean(w_out[500:-500] ** 2), predicted_noise, rtol=0.08)    # the filtered noise has about 1.6 % of statistical error
 
 fig, axes = plt.subplots(2, 1, figsize=(7, 4.5), sharex=True, sharey=True)
 axes[0].plot(n[:1500], r[:1500], lw=0.6)
@@ -344,10 +374,48 @@ plt.show()
 The filter keeps about 12 % of the band, so it keeps about 12 % of the white
 noise power: the prediction is $\sigma^2\sum h^2$, and the gain is close to
 $10\log_{10}(1/0.12) \approx 9$ dB. Narrower bands give larger gains, but no
-filter can remove the noise that lies *inside* the signal's band. The best
-linear filter for a given signal and noise spectrum is the **Wiener filter**,
-$H = S_s/(S_s + S_w)$, which weighs each frequency by how much of it is signal
-(Exercise 6).
+filter that passes the signal unchanged can also remove the noise in the same
+band. The output SNR measures filtered signal against filtered noise. The
+second ratio also penalises changes the filter makes to the useful waveform.
+
+### A filter that minimises squared error
+
+::: {#prp-wiener-response}
+## Wiener frequency response
+
+Let $s$ and $w$ be zero-mean, jointly WSS and uncorrelated at every lag, with
+summable autocorrelations, and let $r=s+w$. Among unconstrained frequency
+responses the spectrum of the squared-error criterion is minimised by
+$H=S_s/(S_s+S_w)$ wherever the denominator is positive. A zero denominator
+means both processes have zero power there and we may set $H=0$.
+:::
+
+::: {.proof}
+The estimation error is $(H-1)$ applied to $s$ plus $H$ applied to $w$.
+Their cross term vanishes by the uncorrelatedness assumption. By
+@thm-filtered-process the error density is $|H-1|^2S_s+|H|^2S_w$.
+Completing the square gives a term $(S_s+S_w)|H-S_s/(S_s+S_w)|^2$ plus a
+constant independent of $H$. Minimising at each frequency also minimises its
+integral. This frequency-by-frequency argument imposes no causality constraint.
+:::
+
+We approximate this response on a long DFT grid and discard the ends where
+circular convolution can affect the comparison. The test uses the theoretical
+spectra of a unit-innovation AR(1) signal and independent white noise of
+variance 4.
+
+```{python}
+wiener_rng = np.random.default_rng(101)
+ar_w = 0.9
+useful = signal.lfilter([1], [1, -ar_w], wiener_rng.normal(size=32768))
+observed = useful + 2 * wiener_rng.normal(size=len(useful))
+omega = 2 * np.pi * np.fft.rfftfreq(len(useful))
+spectrum_signal = 1 / abs(1 - ar_w * np.exp(-1j * omega))**2
+estimate = np.fft.irfft(np.fft.rfft(observed) * spectrum_signal / (spectrum_signal + 4))
+middle = slice(500, -500)
+print(f"noisy MSE: {np.mean((observed[middle] - useful[middle])**2):.3f}")
+print(f"Wiener MSE: {np.mean((estimate[middle] - useful[middle])**2):.3f}")
+```
 
 :::: {.content-visible when-format="html"}
 ::: {.callout-tip}
@@ -378,6 +446,200 @@ plt.show()
 :::
 ::::
 
+### Extension: learning an interference path
+
+A reference microphone can pick up interference before it reaches the main
+microphone. The adaptive filter predicts the unwanted component from nearby
+samples of the reference. With reference vector $\mathbf{u}_n$, weight vector
+$\mathbf{a}_n$ and main input $r[n]$, its residual is
+$e[n]=r[n]-\mathbf{a}_n^T\mathbf{u}_n$. The gradient of $e[n]^2/2$ with respect
+to the weights is $-e[n]\mathbf{u}_n$. The **least mean squares** update takes
+a step opposite to that gradient,
+$\mathbf{a}_{n+1}=\mathbf{a}_n+\mu e[n]\mathbf{u}_n$. It uses one observation
+per update. It works best when the reference is informative about the
+interference and carries little of the useful signal.
+
+```{python}
+lms_rng = np.random.default_rng(102)
+u = lms_rng.uniform(-1, 1, size=16000)
+path = np.array([0.8, -0.45, 0.25])
+interference = signal.lfilter(path, [1], u)
+tone_lms = 0.2 * np.cos(2 * np.pi * 0.03 * np.arange(len(u)))
+microphone = tone_lms + interference
+samples_lms = np.pad(u, (len(path) - 1, 0))
+for step in (0.005, 0.03, 0.12):
+    weights_lms = np.zeros_like(path)
+    residual_lms = np.empty_like(u)
+    for index in range(len(u)):
+        recent = samples_lms[index:index + len(path)][::-1]
+        residual_lms[index] = microphone[index] - weights_lms @ recent
+        weights_lms += step * residual_lms[index] * recent
+    mse_lms = np.mean((residual_lms - tone_lms).reshape(-1, 500)**2, axis=1)
+    reached = np.flatnonzero(mse_lms < 0.005)
+    first_lms = str(reached[0]) if reached.size else "none"
+    print(f"step {step:.3f}: first low-error block {first_lms}, final MSE {mse_lms[-4:].mean():.5f}")
+```
+
+Compare how quickly the error falls and how much of it remains. The modem
+can use the same update during a known preamble, where the reference is
+the target symbol rather than a separate microphone.
+
+## Lab: measuring a spectrum from a recording {#sec-spectral-lab}
+
+A narrow peak in a plot does not tell you its amplitude in the original
+signal or how much power it contributes. In this lab, first calibrate your
+measurement on known tones. Then find a component added to a real
+[Spanish classical guitar recording](data/guitar-e4.wav) [@freepatsguitar].
+The original take is available as a control. In a field recording you would
+need a separate reference or a physical model to tell an interference from
+a useful component.
+
+### Calibrate amplitude and density
+
+Let $v$ be a real window of length $L$ and let $X_v[k]$ be the length-$L$ DFT
+of $v[n]x[n]$. For an on-bin cosine with separated positive and negative
+lines, the amplitude calibration is $2|X_v[k]|/\sum_n v[n]$. The window's
+**coherent gain** is $\sum_n v[n]/L$. A flat noise spectrum instead requires
+the power calibration $|X_v[k]|^2/(F_s\sum_n v[n]^2)$ before making the PSD
+one-sided. Double the bins with a negative-frequency partner, leaving DC
+and, for even $L$, Nyquist unchanged.
+
+::: {#prp-window-power}
+## Integrating a windowed periodogram
+
+For real length-$L$ data and a real window with $\sum_n v[n]^2>0$, the
+one-sided estimate $P[k]$ defined above satisfies
+
+$$
+\sum_k P[k]\,\Delta f =
+\frac{\sum_n v[n]^2 |x[n]|^2}{\sum_n v[n]^2},
+\qquad \Delta f=F_s/L .
+$$
+:::
+
+::: {.proof}
+Folding negative frequencies onto their positive partners leaves the sum
+over DFT bins unchanged. Multiplying it by $F_s/L$ cancels the $F_s$ in the
+PSD denominator. The remaining numerator is $\sum_k |X_v[k]|^2/L$, which
+equals $\sum_n |v[n]x[n]|^2$ by @prp-dft-properties.
+:::
+
+The ratio of spectrum and density scalings is the window's **equivalent
+noise bandwidth** $F_s\sum v[n]^2/(\sum v[n])^2$ in Hz. It equals the bandwidth
+of a rectangular response with the same peak and integrated noise gain as the
+window response [@scipywelch]. For Welch with detrending disabled, the
+integrated PSD is the average of the window-weighted powers of its segments.
+
+```{python}
+def one_sided_density(x, window, rate):
+    density = abs(np.fft.rfft(window * x))**2 / (rate * np.sum(window**2))
+    density[1:-1 if len(x) % 2 == 0 else None] *= 2
+    return np.fft.rfftfreq(len(x), 1 / rate), density
+
+rate_cal, L_cal, k_cal, amplitude_cal = 8000, 1024, 80, 0.25
+n_cal = np.arange(L_cal)
+v_cal = signal.windows.hann(L_cal, sym=False)
+for offset in (0, 0.37):
+    trial = amplitude_cal * np.cos(2 * np.pi * (k_cal + offset) * n_cal / L_cal)
+    peak = 2 * np.max(abs(np.fft.rfft(trial * v_cal))) / v_cal.sum()
+    _, density_cal = one_sided_density(trial, v_cal, rate_cal)
+    power = density_cal.sum() * rate_cal / L_cal
+    assert np.isclose(power, np.sum((trial * v_cal)**2) / np.sum(v_cal**2))
+    if offset == 0:
+        assert np.isclose(peak, amplitude_cal)
+    print(f"{offset:4.2f} bin offset: peak amplitude {peak:.4f}, power {power:.5f}")
+print(f"Hann noise bandwidth: {rate_cal * np.sum(v_cal**2) / v_cal.sum()**2:.2f} Hz")
+```
+
+The lower peak for the off-bin tone is an amplitude error even though the
+integrated power stays nearly the same. Padding can sample the peak more
+closely. It cannot separate two tones already blurred together by the window.
+
+### Locate and measure the interference
+
+The test signal is the guitar recording plus a controlled low-frequency
+interference. The interference is added in floating point so that the control
+and test signals have the same original samples. PCM samples are scaled to
+nominal full scale. Thus amplitude is in full-scale units, power in squared
+full-scale units, and density in squared full-scale units per Hz. These
+samples carry no calibration to volts or sound pressure.
+
+```{python}
+#| label: fig-spectral-lab-density
+#| fig-cap: "Welch densities of the guitar take and the same take with injected interference, plotted on the same scale."
+from scipy.io import wavfile
+
+rate_lab, pcm_lab = wavfile.read("data/guitar-e4.wav")
+control = pcm_lab.astype(float) / 32768
+time_lab = np.arange(len(control)) / rate_lab
+test = 0.8 * control + 0.04 * np.cos(2 * np.pi * 120.7 * time_lab + 0.3)
+reference = 0.8 * control
+length_lab = 8192
+window_lab = signal.windows.hann(length_lab, sym=False)
+
+def welch_half_overlap(x, window, rate):
+    length = len(window)
+    starts = range(0, len(x) - length + 1, length // 2)
+    periodograms = [one_sided_density(x[start:start + length], window, rate)[1]
+                    for start in starts]
+    return np.fft.rfftfreq(length, 1 / rate), np.mean(periodograms, axis=0)
+
+frequencies, p_test = welch_half_overlap(test, window_lab, rate_lab)
+_, p_reference = welch_half_overlap(reference, window_lab, rate_lab)
+_, scipy_check = signal.welch(test[:2 * length_lab], rate_lab, window=window_lab, detrend=False)
+_, our_check = welch_half_overlap(test[:2 * length_lab], window_lab, rate_lab)
+assert np.allclose(scipy_check, our_check, rtol=1e-9, atol=1e-14)
+segment_powers = [np.sum((test[start:start + length_lab] * window_lab)**2) / np.sum(window_lab**2)
+                  for start in range(0, len(test) - length_lab + 1, length_lab // 2)]
+df_lab = frequencies[1] - frequencies[0]
+assert np.isclose(p_test.sum() * df_lab, np.mean(segment_powers))
+band = (frequencies >= 95) & (frequencies <= 150)
+print(f"clipped PCM samples: {np.count_nonzero((pcm_lab == -32768) | (pcm_lab == 32767))}")
+print(f"95–150 Hz power: test {df_lab * p_test[band].sum():.6f}, "
+      f"control {df_lab * p_reference[band].sum():.6f} FS squared")
+fig, ax = plt.subplots()
+ax.plot(frequencies, 10 * np.log10(np.maximum(p_test, 1e-15)), label="test")
+ax.plot(frequencies, 10 * np.log10(np.maximum(p_reference, 1e-15)), label="control")
+ax.set(xlim=(0, 1000), xlabel="frequency (Hz)", ylabel="PSD (dB re 1 FS²/Hz)")
+ax.legend()
+plt.show()
+```
+
+**Your turn.** Use only the test signal to estimate the peak frequency
+between 95 and 150 Hz. Compare the estimate from the Welch grid with that
+from a zero-padded transform of the record. At the refined frequency fit
+a cosine and a sine by least squares. Report the amplitude and repeat the
+fit on four disjoint parts of the record. Finally compare the excess power
+in the specified band with the fitted amplitude squared divided by two.
+
+```{python}
+def line_estimate(samples, rate, lo=95, hi=150):
+    window = signal.windows.hann(len(samples), sym=False)
+    size = 1 << (4 * len(samples) - 1).bit_length()
+    frequencies = np.fft.rfftfreq(size, 1 / rate)
+    candidates = (frequencies >= lo) & (frequencies <= hi)
+    spectrum = abs(np.fft.rfft(samples * window, size))
+    f_line = frequencies[candidates][np.argmax(spectrum[candidates])]
+    phase = 2 * np.pi * f_line * np.arange(len(samples)) / rate
+    tones = np.column_stack((np.cos(phase), np.sin(phase)))
+    coefficients = np.linalg.lstsq(tones, samples, rcond=None)[0]
+    return f_line, np.linalg.norm(coefficients)
+
+f_grid = frequencies[band][np.argmax(p_test[band])]
+f_line, a_line = line_estimate(test, rate_lab)
+parts = [line_estimate(part, rate_lab) for part in np.array_split(test, 4)]
+print(f"Welch bin: {f_grid:.2f} Hz; refined: {f_line:.2f} Hz, amplitude {a_line:.4f} FS")
+print("separate frames (Hz, FS):", np.round(parts, 4))
+print(f"fitted tone power {a_line**2 / 2:.6f} FS squared")
+assert abs(f_line - 120.7) < 0.2 and abs(a_line - 0.04) < 0.003
+```
+
+The frame-to-frame range is a repeatability check for this take. It includes
+changes in the guitar and grid spacing, so it is not a confidence interval.
+The test-versus-control power difference includes the interference and a
+cross term with the guitar. Compare it with the tone estimate before deciding
+how much rejection to ask for in @sec-block-lab.
+
 ## Summary
 
 - A random process is a sequence of random variables. It is WSS if its mean
@@ -395,6 +657,8 @@ plt.show()
   gain is predicted by the fraction of the noise power that the filter keeps.
 
 ## Exercises
+
+See @sec-solution-10 for a worked solution.
 
 1. **Uniform white noise.** Generate white noise uniform on $[-\Delta/2, \Delta/2]$.
    Find its variance and PSD, and verify both numerically. This is the model of

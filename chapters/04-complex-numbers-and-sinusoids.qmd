@@ -469,6 +469,10 @@ Film()
 :::
 ::::
 
+::: {.content-visible when-format="pdf"}
+**Try it.** For a wheel with eight identical spokes, predict the apparent motion for 40°, 45° and 50° of true rotation per frame. The smallest equivalent increments are −5°, 0° and +5° per frame.
+:::
+
 ## Phasors: adding sinusoids by adding numbers
 
 ::: {#prp-phasor-sum}
@@ -640,6 +644,8 @@ next chapter.
   and all the geometry of @sec-signals-as-vectors carries over.
 
 ## Exercises
+
+See @sec-solution-04 for a worked solution.
 
 1. **By hand, then by machine.** Compute $(2 - 3j)(1 + j)$, $1/(1 + j)$,
    $|3 + 4j|$ and the principal argument of $-1 - j$. Write $-1 - j$ and $j$ in

@@ -308,3 +308,55 @@
   @rice2009, @harris2004, @crochiere1983, @hogenauer1981, @carson1922, @haykin2009,
   @lyons2011, @itu450); the entries were written from memory and must be checked
   against the sources before publication.
+
+## 2026-11-18 — recordings for the core labs
+
+- The common control is a two-second, CC0 FreePats guitar recording. The
+  spectral and block-filtering labs use the same explicitly injected tone
+  to make paired measurement possible. Both document how to separate the
+  interference residual from error in the wanted waveform.
+- Put downloadable recordings in `chapters/data/`. List each recording as
+  a resource in the chapter that uses it and as a Pyodide resource for that
+  page. Quarto copies the file and Quarto Live places the same bytes under
+  `data/` in the worker. This lets the visible Python read the same relative
+  path during an offline render and in the browser, without duplicating
+  datasets or adding any dependencies.
+- The default course route uses the two labs and one project. Worked
+  solutions live in a separate appendix so readers can try each exercise first.
+- The spectral lab averages one periodogram at a time. SciPy's strided Welch
+  implementation can exceed Pyodide's maximum virtual array size for this
+  record and window length. For a short slice the chapter checks the result
+  against the pinned SciPy implementation.
+- The SDR chapter ships a CC BY 4.0 excerpt of the Iraq RF Spectrum Dataset,
+  DOI `10.5281/zenodo.22019720`. The original float data's 256 converter levels
+  are stored as byte codes and the rate and centre frequency live in a SigMF
+  sidecar. The same receiver accepts simulated records, this real recording,
+  and other unsigned interleaved I/Q files. An explicit carrier offset bypasses
+  the dial scan for recordings where the relative station frequency is known.
+  Receiver definitions occupy separate cells from the simulation so the live
+  file examples do not also allocate or decode the synthetic RF band.
+
+## 2026-11-18 — seed robustness and contents numbering
+
+- **Asserts on random results must hold for any seed**, because each live cell
+  in the browser starts from a fresh seed and a different stream than the
+  sequential build. Running every chapter with 12 different global seeds found
+  four asserts that held only at the book's seed (they were already in the
+  previous commit). Fixes, each chosen by simulation over 20 000 seeds:
+  - Chapter 3, delay estimation: attenuation 0.4 instead of 0.2 against noise
+    of 0.5 (0.2 failed for 12 % of seeds, 0.4 for none).
+  - Chapter 3, period estimation: "the highest peak" is fragile because the
+    peak at twice the period is only 5 % lower. The estimate is now the first
+    peak that reaches 80 % of the highest one, with noise 0.4 (the old version
+    failed for half of the seeds, the new one for none).
+  - Chapter 10: the tolerances were 2 standard deviations wide. The
+    autocorrelation check now allows 3 % of r[0] (statistical error 0.4 %), and
+    the filtered-noise power 8 % (statistical error 1.6 %).
+  Every chapter that has a global seed passes with 12 seeds; chapters 3 and 10
+  also with 60.
+- **Contents numbering.** `tocnumwidth` of sections is 3.4 em in
+  `styles/book.tex`: with 2.9 em the two-digit numbers of chapter 16
+  (`16.10` onwards) touched their titles.
+- **Chapter 16 stage names.** The stereo decoder and the measurements are
+  optional extensions of the main path, but they keep their stage numbers
+  (6 and 8) so that the plan table, the headings and the text agree.

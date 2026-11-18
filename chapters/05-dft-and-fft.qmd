@@ -218,6 +218,10 @@ plt.show()
 :::
 ::::
 
+::: {.content-visible when-format="pdf"}
+**Try it.** At 1,000 Hz sample rate, take 500 samples of a 50 Hz cosine and then of a 51 Hz cosine. The first has one positive-frequency bin with nonzero amplitude. The second falls between bins and spreads across them.
+:::
+
 ## Properties
 
 Every property below has a one-line proof from the definition, and every one is
@@ -492,7 +496,8 @@ For a filter with a handful of coefficients, direct convolution is cheaper.
 For long ones, such as reverberation, room correction or long correlations, the
 FFT wins by orders of magnitude. For signals that never end, the input is cut
 into blocks that are convolved separately and stitched back together (the
-*overlap-add* method, Exercise 7).
+*overlap-add* method). @sec-block-lab implements it for a recorded signal
+and tests whether changing the block length changes the answer.
 
 ## Summary
 
@@ -512,6 +517,8 @@ into blocks that are convolved separately and stitched back together (the
   (@prp-fft-cost).
 
 ## Exercises
+
+See @sec-solution-05 for a worked solution.
 
 1. **DFT by hand.** Compute the DFT of $\mathbf{x} = (1, 1, 0, 0)$ and of
    $\boldsymbol{\delta} = (1, 0, 0, 0)$ by hand. Check with `np.fft.fft`. What is the

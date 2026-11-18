@@ -1007,6 +1007,8 @@ these units.
 
 ## Exercises
 
+See @sec-solution-02 for a worked solution.
+
 1. **Periodicity.** Decide whether each signal is periodic and, if so, give its
    fundamental period: (a) $\cos(2\pi n/7)$; (b) $\cos(3\pi n/10)$;
    (c) $\cos(n/4)$; (d) $\cos(2\pi n/6) + \cos(2\pi n/4)$;

@@ -28,14 +28,14 @@ book:
         - chapters/04-complex-numbers-and-sinusoids.qmd
         - chapters/05-dft-and-fft.qmd
         - chapters/06-dtft-and-spectral-analysis.qmd
-    - part: "III. Filters"
+    - part: "III. Filters and Noise"
       chapters:
         - chapters/07-lti-systems-and-convolution.qmd
         - chapters/08-z-transform.qmd
         - chapters/09-filter-design.qmd
+        - chapters/10-random-signals-and-noise.qmd
     - part: "IV. From Analog to Digital and Back"
       chapters:
-        - chapters/10-random-signals-and-noise.qmd
         - chapters/11-sampling-and-interpolation.qmd
         - chapters/12-quantization-and-conversion.qmd
         - chapters/13-multirate-processing.qmd
@@ -50,6 +50,7 @@ book:
     - appendices/math-toolbox.qmd
     - appendices/advanced-proofs.qmd
     - appendices/python-libraries.qmd
+    - appendices/selected-solutions.qmd
 
 bibliography: references.bib
 date-format: iso

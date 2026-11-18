@@ -491,9 +491,9 @@ values of $k$.
 
 ```{python}
 #| label: fig-delay-estimation
-#| fig-cap: "A pseudo-random $\\pm 1$ pattern of 127 samples (top) is received with a delay of 300 samples, attenuated by 0.2 and buried in noise (middle). The cross-correlation (bottom) peaks exactly at the delay."
+#| fig-cap: "A pseudo-random $\\pm 1$ pattern of 127 samples (top) is received with a delay of 300 samples, attenuated by 0.4 and buried in noise (middle). The cross-correlation (bottom) peaks exactly at the delay."
 s = rng.choice([-1.0, 1.0], size=127)                # the known pattern
-d_true, a = 300, 0.2
+d_true, a = 300, 0.4
 r = rng.normal(0, 0.5, size=1000)
 r[d_true:d_true + s.size] += a * s
 
@@ -517,7 +517,7 @@ plt.show()
 ```
 
 The received pattern is invisible in the middle panel, since its amplitude is
-0.2 against noise of standard deviation 0.5. The peak is nevertheless sharp,
+0.4 against noise of standard deviation 0.5. The peak is nevertheless sharp,
 because a random $\pm1$ pattern is almost orthogonal to its own shifts: its
 autocorrelation is $127$ at lag 0 and small elsewhere. Communication systems
 choose such patterns on purpose.
@@ -525,20 +525,23 @@ choose such patterns on purpose.
 ### Finding a period
 
 The autocorrelation of a periodic signal is periodic, so its first strong peak
-after lag 0 reveals the period, even under heavy noise. This is how many pitch
+after lag 0 reveals the period, even in noise. This is how many pitch
 detectors estimate the note being sung.
 
 ```{python}
 #| label: fig-autocorrelation-period
-#| fig-cap: "A noisy periodic signal with period 37 samples (top) and its autocorrelation (bottom). Apart from lag 0, the highest peak is at lag 37."
+#| fig-cap: "A noisy periodic signal with period 37 samples (top) and its autocorrelation (bottom). The first strong peak after lag 0 is at lag 37."
 period = 37
 one_period = rng.uniform(-1, 1, period)
-x = np.tile(one_period, 20) + rng.normal(0, 1.0, period * 20)
+x = np.tile(one_period, 20) + rng.normal(0, 0.4, period * 20)
 
 r_xx = signal.correlate(x, x, mode="full")
 lags = signal.correlation_lags(x.size, x.size, mode="full")
 search = (lags >= 5) & (lags <= 200)
-estimated = lags[search][np.argmax(r_xx[search])]
+# the multiples of the period (74, 111, ...) give peaks of almost the same height, so we take the
+# first peak that reaches 80 % of the highest one
+peaks, _ = signal.find_peaks(r_xx[search], height=0.8 * r_xx[search].max())
+estimated = lags[search][peaks[0]]
 print("estimated period:", estimated)
 assert estimated == period
 
@@ -600,6 +603,8 @@ plt.show()
   (@prp-autocorrelation) and, for periodic signals, at multiples of the period.
 
 ## Exercises
+
+See @sec-solution-03 for a worked solution.
 
 1. **Equality in Cauchy–Schwarz.** Show that the triangle inequality is an
    equality if and only if one vector is a nonnegative multiple of the other.

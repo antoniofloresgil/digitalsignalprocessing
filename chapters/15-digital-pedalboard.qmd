@@ -1,3 +1,11 @@
+---
+resources:
+  - data/guitar-e4.wav
+pyodide:
+  resources:
+    - data/guitar-e4.wav
+---
+
 # Project: A Digital Pedalboard {#sec-pedalboard}
 
 The modem of @sec-modem moves bits. This second project moves *music*: it
@@ -32,7 +40,7 @@ By the end of the chapter you should be able to:
   window length trades;
 - build a pitch tuner from the autocorrelation and a periodogram refinement, and
   compare its accuracy with the Cramér–Rao bound;
-- design a peaking equaliser, a distortion without aliasing, a Schroeder reverb
+- design a peaking equaliser, a distortion with reduced aliasing, a Schroeder reverb
   with a prescribed decay time and a pitch shifter, and measure each of them;
 - quantise the result to a given number of bits with and without dither,
   interpolate it to a higher sampling rate and write it as an audio file.
@@ -88,6 +96,54 @@ class Clips:
     def _repr_html_(self):
         return self.html
 ```
+
+## A short route from a recording to a WAV file {#sec-pedalboard-quick}
+
+Load one measured note, estimate its pitch by periodicity, and cut very low
+frequencies with a high-pass filter. The file below is a [FreePats guitar
+take](data/guitar-e4.wav) [@freepatsguitar]. Work on a frame after the attack
+so that the periodic part of the note dominates the pitch estimate.
+@sec-pedalboard-tuner explains the estimation procedure and its limitations.
+
+```{python}
+from scipy.io import wavfile
+
+def autocorr_f0(x, fmin=60.0, fmax=1000.0, rate=fs):
+    """Coarse pitch estimate (Hz): first peak of the autocorrelation, refined by a parabola."""
+    N = len(x)
+    r = np.fft.irfft(np.abs(np.fft.rfft(x, 2 * N)) ** 2)[:N]          # linear autocorrelation by FFT
+    r = r / r[0]
+    k = np.arange(int(rate / fmax), int(rate / fmin))
+    peaks = k[(r[k] > r[k - 1]) & (r[k] >= r[k + 1])]
+    m = peaks[r[peaks] > 0.9 * r[peaks].max()][0]                    # first of the high peaks
+    y0, y1, y2 = r[m - 1], r[m], r[m + 1]
+    return rate / (m + 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2))
+
+
+take_rate, take_pcm = wavfile.read("data/guitar-e4.wav")
+take = take_pcm.astype(float) / 32768
+steady = slice(take_rate // 10, take_rate * 3 // 10)
+highpass = signal.butter(2, 140, btype="highpass", fs=take_rate, output="sos")
+take_filtered = signal.sosfilt(highpass, take)
+pitch_before = autocorr_f0(take[steady], rate=take_rate)
+pitch_after = autocorr_f0(take_filtered[steady], rate=take_rate)
+print(f"pitch before: {pitch_before:.2f} Hz; after: {pitch_after:.2f} Hz")
+assert abs(pitch_after - pitch_before) < 2
+print(f"WAV format: mono, {take_rate} Hz, 16-bit PCM")
+```
+
+::: {.content-visible when-format="html"}
+```{python}
+Clips({"High-pass output": take_filtered}, rate=take_rate,
+      download="guitar-highpass.wav")
+```
+:::
+
+**Your turn.** Move the cutoff through the note's fundamental and compare
+pitch, RMS level and timbre. The effect still processes every sample, but
+when it removes enough of the fundamental it can make a monophonic
+pitch estimate ambiguous. After this route, choose a stage below to add
+an effect or investigate how to measure its performance.
 
 ## The plan {#sec-pedalboard-plan}
 
@@ -466,46 +522,59 @@ the same height; by "high" we mean at least 90 % of the highest peak. We refine 
 a parabola and a very good approximation otherwise.
 
 ```{python}
-def autocorr_f0(x, fmin=60.0, fmax=1000.0):
-    """Coarse pitch estimate (Hz): first peak of the autocorrelation, refined by a parabola."""
-    N = len(x)
-    r = np.fft.irfft(np.abs(np.fft.rfft(x, 2 * N)) ** 2)[:N]          # linear autocorrelation by FFT
-    r = r / r[0]
-    k = np.arange(int(fs / fmax), int(fs / fmin))
-    peaks = k[(r[k] > r[k - 1]) & (r[k] >= r[k + 1])]
-    m = peaks[r[peaks] > 0.9 * r[peaks].max()][0]                    # first of the high peaks
-    y0, y1, y2 = r[m - 1], r[m], r[m + 1]
-    return fs / (m + 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2))
-
 frame = note[2000:2000 + 4096]
 f_coarse = autocorr_f0(frame)
 print(f"autocorrelation: {f_coarse:.3f} Hz, {cents(f_coarse, 220.0):+.2f} cents")
 assert abs(cents(f_coarse, 220.0)) < 5
 ```
 
-### Fine estimate: the periodogram
+### Fine estimate: a spectral peak {#fine-estimate-the-periodogram}
 
-For a sinusoid in white Gaussian noise, the maximum-likelihood estimate of the
-frequency is the position of the maximum of the **periodogram**
-$|\sum_nx[n]\,e^{-j\omega n}|^2$ [@rife1974]. We evaluate it by maximising over a
-narrow interval around the coarse estimate (a 1-D search, no zero-padding needed).
+For a complex exponential with unknown complex amplitude in white Gaussian
+noise, least squares gives a spectral peak as the maximum-likelihood
+frequency estimate [@rife1974]. For a real sinusoid, use two columns,
+$\cos(\omega n)$ and $\sin(\omega n)$. For each trial frequency, solve the
+least-squares problem of @prp-least-squares and choose the frequency with the
+smallest residual. The Gaussian log-likelihood is a constant minus a
+positive multiple of that residual squared. The columns are approximately
+orthogonal with equal length over many cycles, away from both DC and Nyquist.
+In that regime the unwindowed squared spectral magnitude is a useful
+approximation to the least-squares objective. We use a windowed spectral peak
+as a practical refinement for a guitar note, searching around the coarse
+estimate.
 A note is not a sinusoid but a sum of harmonics, and the fundamental is often not
 the strongest of them (after a distortion, it is rarely so). The tuner therefore
 refines the **strongest of the first eight harmonics**, near $kf_c$, and divides the
 result by $k$: a relative error is the same for the harmonic and for the
 fundamental, and the strongest line has the best signal-to-noise ratio.
 How good can any estimator be? For $N$ samples of $A\cos(\omega_0n + \varphi) + w[n]$
-with white noise of variance $\sigma^2$ and unknown amplitude and phase, no unbiased
-estimator has variance below the **Cramér–Rao bound** (@sec-noise,
-@rife1974, @kay1993):
+with independent Gaussian noise of variance $\sigma^2$ and unknown amplitude
+and phase, the **Cramér–Rao bound** gives a lower bound on the variance of an
+unbiased frequency estimate. Away from DC and Nyquist, its large-$N$
+approximation is [@kay1993]
 $$
-\operatorname{var}(\hat\omega_0) \;\ge\; \frac{12}{\eta\,N(N^2 - 1)},
+\mathrm{CRB}_{\mathrm{approx}} = \frac{12}{\eta\,N(N^2 - 1)},
 \qquad \eta = \frac{A^2}{2\sigma^2}.
 $$
-The bound shrinks like $N^{-3}$: a longer frame sharpens the estimate much faster
-than a quieter noise would. We state it without proof, as it needs the theory of
-the Fisher information; its derivation is in the references. We check it by a
-Monte Carlo experiment.
+The approximation shrinks like $N^{-3}$. For a short frame the exact bound
+depends on phase. In Gaussian noise the Fisher information matrix is the
+Gram matrix of the derivatives of the mean signal, divided by $\sigma^2$
+[@kay1993]. Eliminating the amplitude and phase directions leaves the
+squared norm of the frequency derivative after projection off the sine and
+cosine columns, divided by $\sigma^2$. Its reciprocal is the exact bound at
+regular parameter values. Compare two phases with $N=8$, $A=\sigma=1$ and
+$\omega_0=\pi/6$.
+
+```{python}
+n_short = np.arange(8)
+omega_short = np.pi / 6
+C = np.column_stack((np.cos(omega_short * n_short), np.sin(omega_short * n_short)))
+for phase in (0, np.pi / 2):
+    derivative = -n_short * np.sin(omega_short * n_short + phase)
+    residual = derivative - C @ np.linalg.lstsq(C, derivative, rcond=None)[0]
+    exact = 1 / np.dot(residual, residual)
+    print(f"phase {phase:.3f} rad: exact variance bound {exact:.5f}, approximate {24 / (8 * 63):.5f}")
+```
 
 ```{python}
 def refine(x, f, width_cents=25.0, window=True):
@@ -533,7 +602,6 @@ assert abs(cents(f_fine, 220.0)) < 1.0
 # Monte Carlo: a pure tone in white noise, rectangular window, against the Cramér-Rao bound.
 N, f_true, A, trials = 4096, 1000.3, 1.0, 200
 n = np.arange(N)
-rows = []
 for snr_db in (-10, -5, 0, 10, 20):
     eta = 10 ** (snr_db / 10)                         # eta = A^2 / (2 sigma^2)
     sigma = A / np.sqrt(2 * eta)
@@ -543,16 +611,16 @@ for snr_db in (-10, -5, 0, 10, 20):
         k = np.argmax(np.abs(np.fft.rfft(x, 4 * N)))      # coarse: peak of the zero-padded DFT
         errors.append(refine(x, k * fs / (4 * N), width_cents=3.0, window=False) - f_true)
     bound = np.sqrt(12 / (eta * N * (N ** 2 - 1))) * fs / (2 * np.pi)       # in Hz
-    rows.append((snr_db, np.std(errors), bound))
-    print(f"SNR {snr_db:4d} dB: std {np.std(errors):.5f} Hz, bound {bound:.5f} Hz, ratio {np.std(errors) / bound:.2f}")
-    assert 0.6 < np.std(errors) / bound < 1.5         # a ratio of 1 +- the Monte Carlo spread (about 5 %)
+    bias, spread = np.mean(errors), np.std(errors, ddof=1)
+    print(f"SNR {snr_db:4d} dB: bias {bias:+.5f} Hz, std {spread:.5f} Hz, "
+          f"approx. bound {bound:.5f} Hz, ratio {spread / bound:.2f}")
 ```
 
-The standard deviation of the refined estimate equals the bound, within the 5 %
-spread of a 200-trial Monte Carlo experiment, from $-10$ dB to 20 dB (a noise
-ten times stronger than the tone). At 20 dB the error is of the order of a hundredth
-of a cent at 1 kHz. The tuner is limited by physics and statistics, not by its
-algorithm.
+The measured spreads are of the same order as the approximate bound for this
+isolated tone, with a frequency search already localised by the padded DFT.
+The ratios vary across SNRs even with 200 trials. Bias and spread quantify
+different parts of the error. A guitar frame with overlapping notes or
+inharmonic partials requires a separate test.
 
 ### The tuner on a melody: onsets
 
@@ -702,7 +770,7 @@ print(f"pitch after the equaliser: {cents(f_eq, 220.0):+.3f} ct")
 assert abs(cents(f_eq, 220.0)) < 1.0
 ```
 
-### A distortion without aliases
+### Distortion with reduced aliasing {#a-distortion-without-aliases}
 
 A distortion pedal passes the signal through a **non-linear, memoryless** curve.
 Take the smooth saturation $s(v) = \tanh(\gamma v)$ with a drive $\gamma$: small
@@ -1146,14 +1214,32 @@ A quiet signal exposes a weakness of rounding. Take the melody 50 dB below
 full scale, so that its peak is less than half a step of an 8-bit converter:
 every sample rounds to zero and the music is *gone*, not even noisy. Adding
 **dither**, a noise of the size of one step before rounding (triangular
-distribution, @lipshitz1992 and @sec-quantization), turns the rounding error
-into signal-independent noise and keeps the music, buried but recoverable,
-since the noise is spread over all frequencies and the tones are not. We check
-both claims. With triangular dither the rounding error has mean zero *whatever
-the signal* and a variance of $\Delta^2/4$ (the $\Delta^2/12$ of the rounding plus
-the $\Delta^2/6$ of the dither), so the output is the music plus independent noise,
-and its correlation with the music must be $\sigma_x/\sqrt{\sigma_x^2 + \Delta^2/4}$,
-where $\sigma_x$ is the standard deviation of the music.
+distribution, @lipshitz1992 and @sec-quantization), makes the first two moments
+of the total error independent of the input when there is no overload. Given
+any input, the error has mean zero and variance $\Delta^2/4$. Zero conditional
+mean implies zero covariance between the error and the input. The correlation
+between the dithered output and the music is therefore
+$\sigma_x/\sqrt{\sigma_x^2 + \Delta^2/4}$, where $\sigma_x$ is the standard
+deviation of the music. The full distribution still depends on the input.
+At $x=0$ the errors lie on the quantizer grid. At $x=\Delta/4$ the grid of
+possible errors moves by $-\Delta/4$.
+
+```{python}
+#| label: fig-dither-conditional
+#| fig-cap: "Conditional error distributions for two constant inputs to the same quantizer with triangular dither. The possible errors fall on different grids."
+dither_rng = np.random.default_rng(158)
+step_dither = 2.0 / 256
+fig, ax = plt.subplots()
+for level in (0, step_dither / 4):
+    constant = np.full(20000, level)
+    error = (quantise(constant, 8, dither="tpdf", rng=dither_rng) - constant) / step_dither
+    values, count = np.unique(error, return_counts=True)
+    ax.stem(values, count / len(error), label=f"input = {level / step_dither:g} steps")
+    assert np.allclose(error + level / step_dither, np.round(error + level / step_dither))
+ax.set(xlabel="error (quantization steps)", ylabel="relative frequency")
+ax.legend()
+plt.show()
+```
 
 ```{python}
 #| label: fig-pedal-dither
@@ -1193,9 +1279,9 @@ print(f"correlation of the dithered output with the music: {rho:.3f} (theory {rh
 assert abs(rho - rho_theory) < 0.02
 ```
 
-Without dither the converter produces silence; with it, the melody is still there,
-well below the noise in each sample and recoverable from a long enough frame, just
-as the Cramér–Rao bound promised. The price of dither is its
+Without dither the converter produces silence. With dither the correlation
+measurement detects a contribution from the quiet melody despite the larger
+error variance. The price of dither is its
 noise: three times the power of plain rounding noise (4.8 dB), as measured.
 
 ### Interpolation and reconstruction
@@ -1273,6 +1359,8 @@ Clips({"The pedalboard output: 16 bits, 48 kHz": final_48k}, rate=2 * fs, downlo
 
 ## Exercises {#sec-pedalboard-exercises}
 
+See @sec-solution-15 for a worked solution.
+
 1. **Pick position.** A triangular pluck with its apex at the fraction $\beta$ of
    the line has harmonics of amplitude proportional to $|\sin(\pi k\beta)|/k^2$
    (because its second derivative is two impulses a distance $\beta$ apart), so
@@ -1306,7 +1394,7 @@ Clips({"The pedalboard output: 16 bits, 48 kHz": final_48k}, rate=2 * fs, downlo
    it with WSOLA on the melody and on the chord with the periodicity measure
    of the chapter and by ear.
 7. **How long a frame?** At 0 dB SNR, how many samples does a tuner need to read a
-   220 Hz note with a standard deviation of 1 cent, according to the Cramér–Rao
+   220 Hz note with a standard deviation of 1 cent, according to the large-frame approximation to the Cramér–Rao
    bound? Check your answer with the Monte Carlo experiment of the chapter.
 8. **A wah pedal.** Make the peaking equaliser time-varying by moving the centre
    frequency $f_c$ between 500 Hz and 2.5 kHz with a low-frequency oscillator

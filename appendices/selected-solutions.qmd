@@ -1,0 +1,174 @@
+# Selected Exercise Solutions {#sec-selected-solutions}
+
+Each section works through one exercise. Try the corresponding problem
+first, then use the solution to check the reasoning and any numerical output.
+
+## What Is Digital Signal Processing? {#sec-solution-01}
+
+**Exercise 2.** For integer $n$ a cosine at $f$ has the same samples as one
+at $f-kF_s$ and as one with the opposite of either frequency. When $F_s=5$
+Hz use $3-5=-2$ Hz, so the alias in the requested interval is 2 Hz. When
+$F_s=2.5$ Hz use $3-2.5=0.5$ Hz. Plot markers at the sampling instants for
+both frequencies in each pair. The markers coincide even though the
+continuous curves between them differ.
+
+## Discrete-Time Signals {#sec-solution-02}
+
+**Exercise 2.** Shift by $-3$ to make $x[n+3]$, reverse to make $x[3-n]$,
+then down-sample by 2 to obtain $x[3-2n]$. Reversal and down-sampling commute,
+since either order evaluates the intermediate signal at $-2n$. Thus applying
+the same shift, then down-sampling and then reversing, also works.
+
+## Signals as Vectors {#sec-solution-03}
+
+**Exercise 1.** Squaring the triangle inequality reduces it to
+$\langle x,y\rangle\le\|x\|\|y\|$. When both vectors are nonzero,
+equality in Cauchy–Schwarz forces $x$ and $y$ to be proportional. The
+positive sign of their inner product forces the factor to be positive.
+A zero vector makes the original inequality an equality and is the
+zero multiple of the other vector.
+
+## Complex Numbers and Sinusoids {#sec-solution-04}
+
+**Exercise 1.** Distribute and use $j^2=-1$ to get $5-j$. Multiply numerator
+and denominator by $1-j$ to get $(1-j)/2$ for the reciprocal. The modulus
+of $3+4j$ is 5. For $-1-j$ both coordinates are negative, so the principal
+argument is $-3\pi/4$ and the polar form is $\sqrt2\,e^{-3j\pi/4}$.
+The point $j$ lies on the unit circle at angle $\pi/2$. Check the moduli
+and angles with `np.abs` and `np.angle`.
+
+## The DFT and the FFT {#sec-solution-05}
+
+**Exercise 1.** For the first vector only its samples at 0 and 1 contribute,
+so $X[k]=1+e^{-2\pi jk/4}$, giving $(2,1-j,0,1+j)$. The impulse contributes
+1 at every frequency. For the constant vector the $k=0$ sum is $N$. Every
+other bin sums a full period of a nontrivial root of unity and is zero.
+
+## Spectral Analysis in Practice {#sec-solution-06}
+
+**Exercise 1.** The substitution $r=n-m$ leaves a factor
+$e^{-j\omega m}$ outside the sum. The substitution $r=-n$ changes the sign
+of $\omega$. For the symmetric rectangle pair terms at $n$ and $-n$ to get
+$1+2\sum_{n=1}^M\cos(\omega n)$, which is real. Compare that expression
+with the shifted length-$2M+1$ pulse formula from the chapter. At zero use
+the limiting value $2M+1$.
+
+## LTI Systems and Convolution {#sec-solution-07}
+
+**Exercise 2.** The finite convolution subtracts a delayed copy of the
+input from itself. Including the last sample of the delayed copy gives
+$(1,1,1,-3)$. For the step and exponential, the output is zero at negative
+indices. At $n\ge0$ it is $\sum_{k=0}^n a^k=(1-a^{n+1})/(1-a)$. In a
+finite-array test, compare only indices reached before either truncation.
+
+## The z-Transform {#sec-solution-08}
+
+**Exercise 1.** Sum the geometric series separately. The right-sided term
+gives $1/(1-0.5z^{-1})$ for $|z|>0.5$. The left-sided term gives
+$-1/(1-2z^{-1})$ for $|z|<2$. Their intersection contains the unit circle,
+and the original signal is absolutely summable. The other ROCs of this
+rational function lie entirely inside $0.5$ or outside $2$ and therefore
+exclude the unit circle. There is no second stable sequence with these
+poles and a different ROC.
+
+## Filter Design {#sec-solution-09}
+
+**Exercise 1.** Subtract the ideal low-pass frequency response from 1.
+This gives $h_{\mathrm{HP}}[n]=\delta[n]-h_{\mathrm{LP}}[n]$ with its
+central tap $1-\omega_c/\pi$. For an odd length $N$, take the samples from
+$-(N-1)/2$ to $(N-1)/2$, multiply by a symmetric window and store the
+result starting at index zero. The shift adds linear phase. Measure the
+passband and stopband separately with `freqz`, leaving a transition band
+around $\omega_c$.
+
+## Random Signals and Noise {#sec-solution-10}
+
+**Exercise 3.** The two moving averages of white noise at lag $k$ share
+$\max(M-|k|,0)$ samples. Only those shared samples contribute to the
+covariance, so $r_y[k]=\sigma^2\max(M-|k|,0)/M^2$. The outputs are
+uncorrelated at lags $|k|\ge M$. The output PSD is
+$\sigma^2|\sum_{m=0}^{M-1}e^{-j\omega m}/M|^2$. In a simulation, leave out
+the first $M-1$ outputs before estimating either quantity.
+
+## Sampling and Interpolation {#sec-solution-11}
+
+**Exercise 1.** Write a point between samples as $nT+\alpha T$ with
+$0\le\alpha\le1$. The hold error is bounded by
+$T\sup_t|x'(t)|$ by the mean value theorem. For the linear interpolator,
+expand both endpoint samples around the evaluation point. The weighted
+first derivatives cancel. The absolute residual is bounded by
+$\alpha(1-\alpha)T^2\sup_t|x''(t)|/2\le T^2\sup_t|x''(t)|/8$.
+Evaluate the errors on a finer time grid than any sampling grid used
+in the comparison. The expected slopes against $F_s$ are $-1$ and $-2$.
+
+## Quantization and Conversion {#sec-solution-12}
+
+**Exercise 1.** For inputs far from saturation, round $x/\Delta$ to the
+nearest integer and multiply by $\Delta$. This mid-tread rule maps every
+$|x|<\Delta/2$ to zero, so the $0.4\Delta$ tone disappears. The mid-rise
+rule instead uses the two levels $\pm\Delta/2$ around zero. With the chapter's
+tie convention, a zero input gives $+\Delta/2$.
+
+## Multirate Processing {#sec-solution-13}
+
+**Exercise 1.** Keeping every $M$th sample gives
+$\cos(M\omega_0 n)$. Wrap $M\omega_0$ into $[-\pi,\pi)$ and take its
+absolute value because cosine is even. The formula is
+$|((M\omega_0+\pi)\bmod 2\pi)-\pi|$. Its alternating slopes $\pm M$
+produce the folds. For $M=4$, a tone at $0.4\pi$ appears at $0.4\pi$
+because the new $1.6\pi$ wraps to $-0.4\pi$.
+
+## Software Modem {#sec-solution-14}
+
+**Exercise 2.** Use a pulse of $K$ equal samples, normalised to unit energy.
+Its matched-filter output is triangular with support from $-(K-1)$ to
+$K-1$ when centred. It is zero at every nonzero multiple of $K$, so symbol
+sampling gives zero interference in the ideal channel. The magnitude response
+of the pulse is a sampled-sinc shape with slowly decaying sidelobes. A
+voice-band filter cuts these sidelobes and changes the effective pulse.
+Compare the eye diagram before and after the line using the same delay.
+
+## Digital Pedalboard {#sec-solution-15}
+
+**Exercise 7.** One cent above 220 Hz is
+$220(2^{1/1200}-1)\approx0.1271$ Hz above it. Convert this increment to
+rad/sample by multiplying by $2\pi/24000$. At 0 dB, solve
+$N(N^2-1)\ge12/(2\pi\cdot0.1271/24000)^2$. This gives 2,213
+samples, or 92 ms. The expression approximates the bound for an isolated
+sinusoid, so test it with repeated trials and report bias as well as
+standard deviation.
+
+## Software-Defined Radio {#sec-solution-16}
+
+**Exercise 5.** Model the distorted quadrature component as
+$Q'=g(Q\cos\epsilon+I\sin\epsilon)$, with $g=1.05$ and $\epsilon=3^\circ$.
+Write $I=(z+\bar z)/2$ and $Q=(z-\bar z)/(2j)$. The measured signal $I+jQ'$
+contains $z$ with coefficient $(1+g e^{j\epsilon})/2$ and the mirror $\bar z$
+with coefficient $(1-g e^{-j\epsilon})/2$. The ratio of their magnitudes
+predicts the image level in dBc.
+
+To estimate the correction, assume the original centred I and Q have equal
+power and zero covariance. The coefficient of $I$ in $Q'$ is then
+$\widehat a=\mathbb{E}[IQ']/\mathbb{E}[I^2]$. The positive coefficient of $Q$
+is $\widehat b=\sqrt{\mathbb{E}[(Q'-\widehat a I)^2]/\mathbb{E}[I^2]}$.
+Subtract $\widehat a I$ and divide by $\widehat b$. A complex tone on a
+DFT bin verifies both results. Field estimates need a signal or calibration
+capture that satisfies the equal-power and zero-covariance assumptions.
+
+```{python}
+import numpy as np
+
+size_iq, bin_iq = 1024, 113
+z_iq = np.exp(2j * np.pi * bin_iq * np.arange(size_iq) / size_iq)
+gain_iq, phase_iq = 1.05, np.deg2rad(3)
+i_iq = z_iq.real
+q_iq = gain_iq * (z_iq.imag * np.cos(phase_iq) + i_iq * np.sin(phase_iq))
+spec_iq = np.fft.fft(i_iq + 1j * q_iq)
+ratio_iq = abs(spec_iq[-bin_iq] / spec_iq[bin_iq])
+power_iq = np.mean(i_iq**2)
+fit_iq = np.mean(i_iq * q_iq) / power_iq
+uncorrelated_iq = q_iq - fit_iq * i_iq
+q_fixed = uncorrelated_iq / np.sqrt(np.mean(uncorrelated_iq**2) / power_iq)
+assert np.allclose(q_fixed, z_iq.imag)
+print(f"image: {20 * np.log10(ratio_iq):.1f} dBc")
+```

@@ -299,6 +299,10 @@ plt.show()
 :::
 ::::
 
+::: {.content-visible when-format="pdf"}
+**Try it.** Add a tone 60 dB below a stronger tone, and compare the boxcar and Blackman windows. Far from the main lobe, lower sidelobes can uncover the weak tone. Bring the tones closer until the wider main lobe dominates.
+:::
+
 The rule of thumb: use the rectangular window only when frequencies fall on
 bins or when resolving two equally strong, very close tones matters most; use
 Hann (or a relative such as Hamming or Blackman) for everything else.
@@ -352,22 +356,46 @@ frequencies, an inner product with a complex exponential as in
 @sec-complex-numbers, and picks the strongest row and the strongest column.
 
 ```{python}
-def decode(x, tone=0.10, gap=0.05):
-    step, length = int((tone + gap) * fs), int(tone * fs)
+def decode_tone(seg):
+    length = len(seg)
     t = np.arange(length) / fs
     window = signal.get_window("hann", length)
-    out = ""
-    for start in range(0, len(x) - length + 1, step):
-        seg = x[start:start + length] * window
-        power = lambda f: abs(np.vdot(np.exp(2j * np.pi * f * t), seg))
-        r = int(np.argmax([power(f) for f in rows]))
-        c = int(np.argmax([power(f) for f in cols]))
-        out += keys[r][c]
-    return out
+    def strength(f):
+        return abs(np.vdot(np.exp(2j * np.pi * f * t), seg * window))
+
+    r = int(np.argmax([strength(f) for f in rows]))
+    c = int(np.argmax([strength(f) for f in cols]))
+    return keys[r][c]
+
+def decode(x, tone=0.10, gap=0.05):
+    step, length = int((tone + gap) * fs), int(tone * fs)
+    return "".join(decode_tone(x[start:start + length])
+                   for start in range(0, len(x) - length + 1, step))
 
 decoded = decode(x)
 print("dialled:", number, " decoded:", decoded)
 assert decoded == number
+```
+
+A real decoder also has to find the bursts. Square the samples and average
+over 8 ms to smooth out individual cycles. In this demonstration, an energy
+threshold separates the pauses from the tones. The detector reads the
+start and end of each burst from the threshold crossings. A very short
+pause can vanish after smoothing, so keep the envelope for debugging.
+
+```{python}
+variable = np.r_[np.zeros(int(0.04 * fs)),
+                 np.concatenate([dial(key, duration, pause)
+                                 for key, duration, pause in zip(
+                                     "20#", (0.07, 0.13, 0.09), (0.06, 0.04, 0.08))])]
+width = int(0.008 * fs)
+envelope = signal.convolve(variable**2, np.ones(width) / width, mode="same")
+active = envelope > 0.25
+edges = np.flatnonzero(np.diff(np.r_[False, active, False]))
+keys_rx = "".join(decode_tone(variable[start:end]) for start, end in edges.reshape(-1, 2))
+print("detected windows (ms):", np.round(1000 * edges.reshape(-1, 2) / fs, 1))
+print("decoded:", keys_rx)
+assert keys_rx == "20#"
 ```
 
 ### Resolution in time or in frequency
@@ -399,6 +427,51 @@ axes[0].set_ylabel("frequency (Hz)")
 plt.tight_layout()
 plt.show()
 ```
+
+### Extension: reconstructing from a short-time Fourier transform
+
+Keep the complex STFT coefficients to recover the samples. Inverting the
+DFT of each frame gives that frame multiplied by the analysis window $v$.
+Multiplying by $v$ again and adding gives $x[n]\sum_m v[n-mR]^2$, where $R$
+is the step between frames. Divide by this sum wherever it is positive.
+Padding both ends lets the first and last original samples take part in
+overlaps. If a coefficient is edited, the same synthesis gives a waveform
+whose contributions near the edit are spread by the windows.
+
+```{python}
+def short_time_edit(x, rate, edit=False):
+    length, hop = 256, 64
+    window = signal.windows.hann(length, sym=False)
+    padded = np.pad(x, length)
+    output = np.zeros_like(padded)
+    weights = np.zeros_like(padded)
+    band = (np.fft.rfftfreq(length, 1 / rate) >= 1300) & (np.fft.rfftfreq(length, 1 / rate) <= 1700)
+    for start in range(0, len(padded) - length + 1, hop):
+        span = slice(start, start + length)
+        coefficients = np.fft.rfft(window * padded[span])
+        centre = (start - length / 2) / rate
+        if edit and 0.2 <= centre <= 0.4:
+            coefficients[band] = 0
+        output[span] += window * np.fft.irfft(coefficients, length)
+        weights[span] += window**2
+    interior = slice(length, length + len(x))
+    return output[interior] / weights[interior]
+
+sample_rate = 8000
+t_edit = np.arange(sample_rate) / sample_rate
+target = np.sin(2 * np.pi * 500 * t_edit)
+burst = 0.5 * np.sin(2 * np.pi * 1500 * t_edit) * ((0.2 <= t_edit) & (t_edit <= 0.4))
+received_edit = target + burst
+restored = short_time_edit(received_edit, sample_rate)
+edited = short_time_edit(received_edit, sample_rate, edit=True)
+assert np.allclose(restored, received_edit, atol=1e-12)
+middle_burst = (0.24 < t_edit) & (t_edit < 0.36)
+for region in ((0.19 < t_edit) & (t_edit < 0.22), middle_burst):
+    print(f"edited RMS error against the clean tone: {np.sqrt(np.mean((edited[region] - target[region])**2)):.4f}")
+```
+
+Compare the burst interior with its onset. Increasing the frame length
+can improve isolation in frequency while extending the edit in time.
 
 ## Digital frequency and frequency in hertz
 
@@ -580,6 +653,10 @@ and a signal on $[-a, a]$ with all moments zero is zero
 (@thm-no-time-limited-bandlimited proves it). Real signals are therefore only
 approximately bandlimited, and anti-aliasing filters are always needed.
 
+@sec-spectral-lab follows the same steps on a measured recording. It
+calibrates the amplitude and PSD scales and compares an interference
+measurement on several frames.
+
 ## Summary
 
 - The DTFT $X(e^{j\omega}) = \sum_nx[n]e^{-j\omega n}$ of an absolutely summable
@@ -602,6 +679,8 @@ approximately bandlimited, and anti-aliasing filters are always needed.
   signals never are.
 
 ## Exercises
+
+See @sec-solution-06 for a worked solution.
 
 1. **DTFT of a shifted signal.** Show that the DTFT of $x[n - m]$ is
    $e^{-j\omega m}X(e^{j\omega})$, and that the DTFT of $x[-n]$ is $X(e^{-j\omega})$.
